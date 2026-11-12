@@ -1,7 +1,10 @@
+@"
 pdfplumber
 pypdfium2
 Pillow
 imagehash
 openpyxl
 docx2pdf
-PySide6
+PySide6-Essentials
+"@ | Set-Content -Path requirements.txt -Encoding ascii
+
