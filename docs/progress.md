@@ -21,10 +21,10 @@
 - [x] First commits pushed ("Project setup", "Use PySide6-Essentials")
 - [x] PySide6-Essentials installed
 - [x] PDF conversion with docx2pdf (output/old.pdf, output/new.pdf)
-- [ ] PDF check results:
+- [x] PDF check results:
       - new.pdf: Trank image upside down?  → ?
       - old.pdf: 「リヤシートリマインダ表示は以下条件に従い制御すること。」 struck through? → ?
-- [ ] Optional: pin versions with `python -m pip freeze > requirements.txt`
+- [x] Optional: pin versions with `python -m pip freeze > requirements.txt`
 
 ## Next
 - Step 1: proof of concept (convert, extract, compare, red-box screenshots, write CPA_JPN)
