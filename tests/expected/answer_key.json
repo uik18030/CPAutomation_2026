@@ -1,0 +1,8 @@
+[
+  {"no": 1, "header": "条件信号", "type": "Modified", "old": "[3DS]", "new": "[3D5]"},
+  {"no": 2, "header": "条件信号", "type": "Modified", "old": "開いている*1", "new": "開いている"},
+  {"no": 3, "header": "条件信号", "type": "Modified", "change": "Trank image rotated 180°"},
+  {"no": 4, "header": "エンディングモード制御", "type": "Modified", "new": "新たに"},
+  {"no": 5, "header": "エンディングモード制御", "type": "Modified", "change": "strikethrough removed"},
+  {"no": 6, "header": "エンディングモード制御", "type": "Modified", "old": "T_dis_RSR", "new": "T_dis_RSP"}
+]

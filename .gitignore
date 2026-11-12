@@ -1,0 +1,20 @@
+@"
+# Virtual environment
+.venv/
+pyvenv.cfg
+
+# Confidential documents - never upload
+*.pdf
+*.docx
+# Uncomment to allow the test pair (only if company rules allow):
+# !tests/data/File_Old_update.docx
+# !tests/data/File_New_update.docx
+
+# Generated / local
+output/
+data/
+__pycache__/
+*.pyc
+build/
+dist/
+"@ | Set-Content -Path .gitignore -Encoding ascii
