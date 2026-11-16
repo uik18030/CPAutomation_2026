@@ -4,7 +4,7 @@ Old Spec : red box around removed content, otherwise plain
 Latest   : red box around new/changed content, solid red marker where content was removed
 
 Run:
-    python -m cpa.shots tests/data/File_Old_update.docx tests/data/File_New_update.docx
+    python -m cpa.shots OLD NEW
 Writes output/shots/NN_old.png, NN_new.png and output/changes.txt
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from cpa.compare import Box, Change, compare, write_changes
 # ------------------------------------------------------------------ settings
 DPI = 150
 SCALE = DPI / 72          # PDF points -> pixels
-PAD_Y = 30.0              # pt of context above and below the change
+PAD_Y = 40.0              # pt of context above and below the change
 BOX_PAD = 2.0             # pt between text and red box
 BOX_WIDTH = 3             # px line width of the red box
 MARK_GROW = 1.0           # pt: markers are drawn slightly bigger so they are visible
@@ -70,6 +70,18 @@ def _regions(blocks: list[Block], *box_lists: list[Box]) -> dict[int, list[float
             add(p, top, bottom)
     return reg
 
+def _with_row_context(blocks: list[Block], doc) -> list[Block]:
+    """For changed table cells, also show the other cells of the same table row."""
+    if doc is None:
+        return blocks
+    keys = {(b.table, b.row) for b in blocks if b.kind == "cell"}
+    if not keys:
+        return blocks
+    have = {id(b) for b in blocks}
+    extra = [x for x in doc.blocks
+             if x.kind == "cell" and (x.table, x.row) in keys and id(x) not in have]
+    return blocks + extra
+
 def _shot(rend: PageRenderer, regions: dict[int, list[float]],
           boxes: list[Box], markers: list[Box], out_path: Path) -> Path | None:
     if not regions:
@@ -103,7 +115,8 @@ def _shot(rend: PageRenderer, regions: dict[int, list[float]],
     return out_path
 
 def make_shots(changes: list[Change], old_pdf: Path, new_pdf: Path,
-               out_dir: Path) -> dict[int, tuple[Path | None, Path | None]]:
+               out_dir: Path, old_doc=None, new_doc=None
+               ) -> dict[int, tuple[Path | None, Path | None]]:
     """Create NN_old.png / NN_new.png for every change. Returns {no: (old, new)}."""
     shots_dir = out_dir / "shots"
     if shots_dir.exists():
@@ -114,8 +127,9 @@ def make_shots(changes: list[Change], old_pdf: Path, new_pdf: Path,
     result: dict[int, tuple[Path | None, Path | None]] = {}
     try:
         for c in changes:
-            old_reg = _regions(c.old_blocks, c.old_boxes, c.old_anchor)
-            new_reg = _regions(c.new_blocks, c.new_boxes, c.new_markers)
+            old_reg = _regions(_with_row_context(c.old_blocks, old_doc), c.old_boxes, c.old_anchor)
+            new_reg = _regions(_with_row_context(c.new_blocks, new_doc), c.new_boxes,
+                               c.new_markers, c.new_anchor)
             o = _shot(old_r, old_reg, c.old_boxes, [], shots_dir / f"{c.no:02d}_old.png")
             n = _shot(new_r, new_reg, c.new_boxes, c.new_markers, shots_dir / f"{c.no:02d}_new.png")
             result[c.no] = (o, n)
@@ -136,7 +150,7 @@ def main() -> None:
     new = load(args.new, out_dir)
     changes = compare(old, new)
     write_changes(changes, old, new, out_dir / "changes.txt")
-    shots = make_shots(changes, old.pdf, new.pdf, out_dir)
+    shots = make_shots(changes, old.pdf, new.pdf, out_dir, old, new)
     made = sum((o is not None) + (n is not None) for o, n in shots.values())
     print(f"{len(changes)} changes, {made} screenshots -> {out_dir / 'shots'}")
 

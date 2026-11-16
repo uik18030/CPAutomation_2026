@@ -1,7 +1,7 @@
 """Step 1c: compare old and new documents block by block, then character by character.
 
 Run:
-    python -m cpa.compare tests/data/File_Old_update.docx tests/data/File_New_update.docx
+    python -m cpa.compare OLD NEW
 Writes output/changes.txt (UTF-8).
 """
 from __future__ import annotations
@@ -28,12 +28,13 @@ class Change:
     new_blocks: list[Block] = field(default_factory=list)
     old_boxes: list[Box] = field(default_factory=list)    # red boxes on Old Spec
     new_boxes: list[Box] = field(default_factory=list)    # red boxes on Latest Spec
-    new_markers: list[Box] = field(default_factory=list)  # red markers on Latest Spec (deletions)
+    new_markers: list[Box] = field(default_factory=list)  # red markers on Latest Spec
     details: list[str] = field(default_factory=list)
     no: int = 0
     first_seq: int = 0
     last_seq: int = 0
-    old_anchor: list[Box] = field(default_factory=list)  # red boxes on Old Spec for anchors (deleted blocks)
+    old_anchor: list[Box] = field(default_factory=list)   # area to show in old (crop only)
+    new_anchor: list[Box] = field(default_factory=list)   # area to show in new (crop only)
 
 # ------------------------------------------------------------------ block helpers
 _COMPACT: dict[int, list[tuple[int, TChar]]] = {}
@@ -53,7 +54,7 @@ def _group(b: Block) -> str:
         return "cell"
     if b.kind == "hf":
         return "hf:" + b.heading
-    return "text"                               # headings and paragraphs
+    return "text"
 
 def _key(b: Block) -> tuple[str, str]:
     return (_group(b), _ctext(b))
@@ -123,7 +124,7 @@ def _point_marker(seq: list[tuple[int, TChar]], j: int) -> Box | None:
     return (c.page, x - 1.0, c.top, x + 1.0, c.bottom)
 
 def _gap_marker(N: list[Block], j: int) -> Box | None:
-    """Thin horizontal marker where a deleted block used to be (before N[j])."""
+    """Thin horizontal marker where a block used to be (before N[j])."""
     if j < len(N):
         bb = N[j].bboxes()
         if not bb:
@@ -158,7 +159,6 @@ def _sim(o: Block, n: Block) -> float:
     return r
 
 def _pair_range(O: list[Block], N: list[Block], i1: int, i2: int, j1: int, j2: int) -> list[tuple]:
-    """Pair similar blocks inside an unmatched stretch (keeps document order)."""
     n, m = i2 - i1, j2 - j1
     if n == 0:
         return [("ins", j1 + k, i1) for k in range(m)]
@@ -254,6 +254,46 @@ def _diff_pair(o: Block, n: Block):
             _boxes_for(nc, _expand_words(nc, new_idx)),
             markers, details)
 
+# ------------------------------------------------------------------ table rows
+def _row_boxes(blocks: list[Block], key: tuple) -> list[Box]:
+    """Area of one table row from its text (all its cells), one box per page."""
+    out: dict[int, tuple[float, float, float, float]] = {}
+    for b in blocks:
+        if b.kind == "cell" and (b.table, b.row) == key:
+            for p, (x0, t, x1, bt) in b.bboxes().items():
+                r = out.get(p)
+                out[p] = (x0, t, x1, bt) if r is None else (
+                    min(r[0], x0), min(r[1], t), max(r[2], x1), max(r[3], bt))
+    return [(p, *v) for p, v in sorted(out.items())]
+
+def _partner_row(src: list[Block], idx_map: dict[int, int], dst: list[Block],
+                 b: Block) -> tuple | None:
+    """Same table row in the other document.
+
+    1) a cell of the same row exists in both documents -> use its row
+    2) otherwise any matched cell of the same table -> same row number,
+       shifted by that cell's row difference (handles added/removed rows above)
+    """
+    fallback = None
+    for si, di in idx_map.items():
+        s, d = src[si], dst[di]
+        if s.kind != "cell" or d.kind != "cell" or s.table != b.table:
+            continue
+        if s.row == b.row:
+            return (d.table, d.row)
+        if fallback is None or abs(s.row - b.row) < abs(fallback[0] - b.row):
+            fallback = (s.row, d.table, d.row - s.row)
+    if fallback:
+        return (fallback[1], b.row + fallback[2])
+    return None
+
+def _row_area(blocks: list[Block], table_rows: dict | None, key: tuple) -> list[Box]:
+    """Area of a table row: from the table grid (works for empty rows), else from its text."""
+    g = table_rows.get(key) if table_rows else None
+    if g:
+        return [g]
+    return _row_boxes(blocks, key)
+
 # ------------------------------------------------------------------ changes
 def _row_key(c: Change):
     b = (c.new_blocks or c.old_blocks)[0]
@@ -282,15 +322,20 @@ def _merge(changes: list[Change]) -> list[Change]:
                 p.new_boxes += c.new_boxes
                 p.new_markers += c.new_markers
                 p.old_anchor += c.old_anchor
+                p.new_anchor += c.new_anchor
                 p.details += c.details
                 p.last_seq = c.last_seq
                 continue
         out.append(c)
     return out
 
-def _changes_for(O: list[Block], N: list[Block]) -> list[Change]:
+def _changes_for(O: list[Block], N: list[Block],
+                 old_rows: dict | None = None, new_rows: dict | None = None) -> list[Change]:
+    ops = _align(O, N)
+    n2o = {op[2]: op[1] for op in ops if op[0] == "pair"}
+    o2n = {op[1]: op[2] for op in ops if op[0] == "pair"}
     out: list[Change] = []
-    for seq, op in enumerate(_align(O, N)):
+    for seq, op in enumerate(ops):
         if op[0] == "pair":
             o, n = O[op[1]], N[op[2]]
             d = _diff_pair(o, n)
@@ -300,17 +345,31 @@ def _changes_for(O: list[Block], N: list[Block]) -> list[Change]:
                                   first_seq=seq, last_seq=seq))
         elif op[0] == "del":
             o = O[op[1]]
-            mk = _gap_marker(N, op[2])
-            out.append(Change("Deleted", o.heading, [o], [], _boxes(o.chars), [],
-                              [mk] if mk else [], [f"deleted 「{_short(o)}」"],
-                              first_seq=seq, last_seq=seq))
+            ch = Change("Deleted", o.heading, [o], [], _boxes(o.chars), [], [],
+                        [f"deleted 「{_short(o)}」"], first_seq=seq, last_seq=seq)
+            key = _partner_row(O, o2n, N, o) if o.kind == "cell" else None
+            row = _row_area(N, new_rows, key) if key else []
+            if row:
+                ch.new_anchor = row
+                p, x0, top, x1, _ = row[0]
+                ch.new_markers = [(p, x0, top - 3.0, x1, top - 1.0)]
+            else:
+                mk = _gap_marker(N, op[2])
+                if mk:
+                    ch.new_markers = [mk]
+            out.append(ch)
         else:
             n = N[op[1]]
-            anchor = _gap_marker(O, op[2])
             ch = Change("New", n.heading, [], [n], [], _boxes(n.chars), [],
-                            [f"added 「{_short(n)}」"], first_seq=seq, last_seq=seq)
-            if anchor:
-                ch.old_anchor = [anchor]
+                        [f"added 「{_short(n)}」"], first_seq=seq, last_seq=seq)
+            key = _partner_row(N, n2o, O, n) if n.kind == "cell" else None
+            row = _row_area(O, old_rows, key) if key else []
+            if row:
+                ch.old_anchor = row
+            else:
+                anchor = _gap_marker(O, op[2])
+                if anchor:
+                    ch.old_anchor = [anchor]
             out.append(ch)
     return _merge(out)
 
@@ -326,9 +385,11 @@ def _dedupe(blocks: list[Block]) -> list[Block]:
     return out
 
 def compare(old: CleanDoc, new: CleanDoc) -> list[Change]:
+    old_rows = getattr(old, "table_rows", None) or {}
+    new_rows = getattr(new, "table_rows", None) or {}
     ob = [b for b in old.blocks if b.kind != "hf"]
     nb = [b for b in new.blocks if b.kind != "hf"]
-    changes = _changes_for(ob, nb)
+    changes = _changes_for(ob, nb, old_rows, new_rows)
     changes += _changes_for(_dedupe([b for b in old.blocks if b.kind == "hf"]),
                             _dedupe([b for b in new.blocks if b.kind == "hf"]))
     for i, c in enumerate(changes, start=1):
@@ -339,6 +400,9 @@ def compare(old: CleanDoc, new: CleanDoc) -> list[Change]:
 def _pages(blocks: list[Block]) -> str:
     ps = sorted({p for b in blocks for p in b.bboxes()})
     return "p" + ",".join(map(str, ps)) if ps else "-"
+
+def _areas(boxes: list[Box]) -> str:
+    return ", ".join(f"p{p} y={t:.0f}-{b:.0f}" for p, _, t, _, b in boxes) or "-"
 
 def write_changes(changes: list[Change], old: CleanDoc, new: CleanDoc, path: Path) -> None:
     out = [f"# {old.source.name} → {new.source.name}   ({len(changes)} changes)   "
@@ -357,6 +421,8 @@ def write_changes(changes: list[Change], old: CleanDoc, new: CleanDoc, path: Pat
             out.append(f"     - {d}")
         out.append(f"     boxes: old {len(c.old_boxes)}, new {len(c.new_boxes)}, "
                    f"markers {len(c.new_markers)}")
+        if c.old_anchor or c.new_anchor:
+            out.append(f"     crop area: old {_areas(c.old_anchor)} | new {_areas(c.new_anchor)}")
     path.write_text("\n".join(out), encoding="utf-8")
 
 def main() -> None:

@@ -18,3 +18,4 @@ __pycache__/
 build/
 dist/
 "@ | Set-Content -Path .gitignore -Encoding ascii
+*.doc

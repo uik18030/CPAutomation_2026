@@ -83,6 +83,8 @@ class CleanDoc:
     pdf: Path
     pages: list[PageInfo]
     blocks: list[Block]
+    table_rows: dict = field(default_factory=dict)   # (table, row) -> (page, x0, top, x1, bottom)
+
 
 @dataclass
 class _Sub:
@@ -398,6 +400,17 @@ def clean(doc: Document, source: Path | None = None) -> CleanDoc:
 
     # table cells
     mapping = _table_mapping(doc, cell_subs)
+    table_rows: dict[tuple[int, int], tuple[int, float, float, float, float]] = {}
+    for ti, t in enumerate(doc.tables):
+        lid, off, drop = mapping[ti]
+        for ri, row in enumerate(t.rows):
+            if drop and ri == 0:
+                continue
+            cells = [c for c in row if c]
+            if cells:
+                table_rows.setdefault((lid, off + ri), (
+                    t.page, min(c[0] for c in cells), min(c[1] for c in cells),
+                    max(c[2] for c in cells), max(c[3] for c in cells)))
     merged_cells: dict[tuple[int, int, int], list[_Sub]] = {}
     row_tops: dict[tuple[int, int], tuple[int, float]] = {}
     for (ti, ri, ci), subs in cell_subs.items():
@@ -436,7 +449,7 @@ def clean(doc: Document, source: Path | None = None) -> CleanDoc:
         if tcs:
             blocks.append(Block("hf", s.page, s.top, heading=label, chars=tcs))
 
-    return CleanDoc(source or doc.path, doc.path, doc.pages, blocks)
+    return CleanDoc(source or doc.path, doc.path, doc.pages, blocks, table_rows)
 
 def load(src: str | Path, out_dir: str | Path = "output") -> CleanDoc:
     """Convert (if needed), extract and clean one document."""
