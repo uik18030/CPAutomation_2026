@@ -1,12 +1,13 @@
-"""Step 1a: read text lines (with page, position and font info) from a PDF.
+"""Step 1a: read text lines, thin lines, tables and pictures (with positions) from a PDF.
 
 Run:
-    python -m cpa.extract tests/data/File_Old_update.docx tests/data/File_New_update.docx
+    python -m cpa.extract OLD NEW
 Writes output/dump_<name>.txt (UTF-8) for each input.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import pdfplumber
 from cpa.convert import to_pdf
 
 BBox = tuple[float, float, float, float]  # x0, top, x1, bottom
+MIN_IMAGE_PT = 6.0                         # smaller pictures (bullets, dots) are ignored
 
 @dataclass
 class Char:
@@ -60,12 +62,25 @@ class TableInfo:
     rows: list[list[BBox | None]]
 
 @dataclass
+class ImageInfo:
+    """A picture placed on the page (position in pt; digest = hash of the image data)."""
+    page: int
+    x0: float
+    top: float
+    x1: float
+    bottom: float
+    src_w: int
+    src_h: int
+    digest: str | None
+
+@dataclass
 class Document:
     path: Path
     pages: list[PageInfo]
     lines: list[Line]
     hsegments: list[HSegment]
     tables: list[TableInfo] = field(default_factory=list)
+    images: list[ImageInfo] = field(default_factory=list)
 
 def _color(c: dict) -> tuple | None:
     v = c.get("non_stroking_color")
@@ -81,15 +96,22 @@ def _color(c: dict) -> tuple | None:
 def _bbox(v) -> BBox:
     return (float(v[0]), float(v[1]), float(v[2]), float(v[3]))
 
+def _digest(im: dict) -> str | None:
+    s = im.get("stream")
+    if s is None:
+        return None
+    for getter in ("get_rawdata", "get_data"):
+        try:
+            data = getattr(s, getter)()
+        except Exception:
+            continue
+        if data:
+            return hashlib.sha1(data).hexdigest()
+    return None
+
 def _logical_columns(rows: list[list[BBox | None]], min_w: float = 8.0,
                      snap: float = 1.0) -> list[list[BBox | None]]:
-    """Re-index cells on the table's real columns.
-
-    Shaded cells / cell padding can make pdfplumber see extra narrow columns
-    (e.g. 5 pt strips next to the borders). A column boundary that would create
-    a column narrower than *min_w* is removed - the boundary seen in fewer rows
-    goes first, the outer table edges are always kept.
-    """
+    """Re-index cells on the table's real columns (drops narrow shading/padding strips)."""
     bounds: list[list[float]] = []  # [x, number of rows that have this boundary]
     for r in rows:
         xs = sorted(x for c in r if c for x in (c[0], c[2]))
@@ -134,7 +156,7 @@ def _logical_columns(rows: list[list[BBox | None]], min_w: float = 8.0,
                 continue
             s, e = nearest(c[0]), nearest(c[2])
             if e <= s:
-                continue  # narrow strip that collapsed onto one boundary
+                continue
             box = (xs[s], c[1], xs[e], c[3])
             old = nr[s]
             nr[s] = box if old is None else (min(old[0], box[0]), min(old[1], box[1]),
@@ -142,12 +164,12 @@ def _logical_columns(rows: list[list[BBox | None]], min_w: float = 8.0,
         out.append(nr)
     return out
 
-
 def extract(pdf_path: str | Path) -> Document:
     pages: list[PageInfo] = []
     lines: list[Line] = []
     segs: list[HSegment] = []
     tables: list[TableInfo] = []
+    images: list[ImageInfo] = []
 
     with pdfplumber.open(pdf_path) as pdf:
         for pno, page in enumerate(pdf.pages, start=1):
@@ -184,15 +206,27 @@ def extract(pdf_path: str | Path) -> Document:
                     cells = [_bbox(c) if c else None for c in r.cells]
                     real = [c for c in cells if c]
                     if not real or max(c[3] - c[1] for c in real) < 2:
-                        continue  # skip empty rows and hairline rows (double borders)
+                        continue
                     rows.append(cells)
                 if rows:
                     tables.append(TableInfo(pno, _bbox(t.bbox), _logical_columns(rows)))
 
+            for im in page.images:
+                x0, x1 = sorted((float(im["x0"]), float(im["x1"])))
+                top, bottom = sorted((float(im["top"]), float(im["bottom"])))
+                x0, top = max(0.0, x0), max(0.0, top)
+                x1, bottom = min(float(page.width), x1), min(float(page.height), bottom)
+                if x1 - x0 < MIN_IMAGE_PT or bottom - top < MIN_IMAGE_PT:
+                    continue
+                src = im.get("srcsize") or (0, 0)
+                images.append(ImageInfo(pno, x0, top, x1, bottom,
+                                        int(src[0] or 0), int(src[1] or 0), _digest(im)))
+
     lines.sort(key=lambda l: (l.page, round(l.top, 1), l.x0))
     segs.sort(key=lambda s: (s.page, s.y, s.x0))
     tables.sort(key=lambda t: (t.page, t.bbox[1], t.bbox[0]))
-    return Document(Path(pdf_path), pages, lines, segs, tables)
+    images.sort(key=lambda i: (i.page, round(i.top, 1), i.x0))
+    return Document(Path(pdf_path), pages, lines, segs, tables, images)
 
 def write_dump(doc: Document, path: Path) -> None:
     out: list[str] = [f"# {doc.path.name}"]
@@ -215,10 +249,14 @@ def write_dump(doc: Document, path: Path) -> None:
                 tops = [c[1] for c in row if c]
                 bots = [c[3] for c in row if c]
                 out.append(f"    row {ri}: y={min(tops):.1f}-{max(bots):.1f} | {cells}")
+        out.append(f"--- images on page {p.number}")
+        for im in (i for i in doc.images if i.page == p.number):
+            out.append(f"  x={im.x0:6.1f}-{im.x1:6.1f} y={im.top:6.1f}-{im.bottom:6.1f} "
+                       f"src={im.src_w}x{im.src_h} data={(im.digest or '-')[:10]}")
     path.write_text("\n".join(out), encoding="utf-8")
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Dump PDF text lines with positions (Step 1a).")
+    ap = argparse.ArgumentParser(description="Dump PDF text, lines, tables and pictures.")
     ap.add_argument("files", nargs="+", help=".pdf or .docx files")
     ap.add_argument("--out", default="output", help="output folder (default: output)")
     args = ap.parse_args()
@@ -230,7 +268,8 @@ def main() -> None:
         dump_path = out_dir / f"dump_{Path(f).stem}.txt"
         write_dump(doc, dump_path)
         print(f"{Path(f).name}: {len(doc.pages)} page(s), {len(doc.lines)} lines, "
-              f"{len(doc.hsegments)} thin horizontal shapes, {len(doc.tables)} table(s) -> {dump_path}")
+              f"{len(doc.hsegments)} thin shapes, {len(doc.tables)} table(s), "
+              f"{len(doc.images)} image(s) -> {dump_path}")
 
 if __name__ == "__main__":
     main()

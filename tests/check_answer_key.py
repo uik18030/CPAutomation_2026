@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 from cpa.clean import load, norm_char            # noqa: E402
 from cpa.compare import Change, _ctext, compare  # noqa: E402
 
-PENDING_WORDS = ("image", "画像", "rotat")       # not detected before Step 2
+PENDING_WORDS = ()       # not detected before Step 2
 
 def norm(s: str) -> str:
     """Same normalising as the tool (full/half width, punctuation), spaces removed."""

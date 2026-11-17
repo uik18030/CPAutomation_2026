@@ -84,6 +84,7 @@ class CleanDoc:
     pages: list[PageInfo]
     blocks: list[Block]
     table_rows: dict = field(default_factory=dict)   # (table, row) -> (page, x0, top, x1, bottom)
+    images: list = field(default_factory=list)
 
 
 @dataclass
@@ -449,7 +450,7 @@ def clean(doc: Document, source: Path | None = None) -> CleanDoc:
         if tcs:
             blocks.append(Block("hf", s.page, s.top, heading=label, chars=tcs))
 
-    return CleanDoc(source or doc.path, doc.path, doc.pages, blocks, table_rows)
+    return CleanDoc(source or doc.path, doc.path, doc.pages, blocks, table_rows, doc.images)
 
 def load(src: str | Path, out_dir: str | Path = "output") -> CleanDoc:
     """Convert (if needed), extract and clean one document."""

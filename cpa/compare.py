@@ -384,22 +384,47 @@ def _dedupe(blocks: list[Block]) -> list[Block]:
             out.append(b)
     return out
 
-def compare(old: CleanDoc, new: CleanDoc) -> list[Change]:
+def _first_box(*box_lists: list[Box]):
+    for boxes in box_lists:
+        if boxes:
+            p, _, t, _, _ = boxes[0]
+            return (p, t)
+    return None
+
+def _pos(c: Change) -> tuple:
+    """Position used to number changes in document order."""
+    if c.new_blocks:
+        b = c.new_blocks[0]
+        return (b.page, b.top)
+    p = _first_box(c.new_boxes, c.new_markers, c.new_anchor)
+    if p:
+        return p
+    if c.old_blocks:
+        b = c.old_blocks[0]
+        return (b.page, b.top)
+    return _first_box(c.old_boxes, c.old_anchor) or (10 ** 9, 0.0)
+
+def compare(old: Cleandoc, new: CLeanDoc) -> list[Change]:
+    from cpa.images import image_changes  # imported here to avoid a circular import
+
     old_rows = getattr(old, "table_rows", None) or {}
-    new_rows = getattr(new, "table_rows", None) or {}
+    new_rows = getattr(old, "table_rows", None) or {}
     ob = [b for b in old.blocks if b.kind != "hf"]
     nb = [b for b in new.blocks if b.kind != "hf"]
-    changes = _changes_for(ob, nb, old_rows, new_rows)
-    changes += _changes_for(_dedupe([b for b in old.blocks if b.kind == "hf"]),
-                            _dedupe([b for b in new.blocks if b.kind == "hf"]))
+    body = _changes_for(ob, nb, old_rows, new_rows)
+    hf = _changes_for(_dedupe([b for b in old.blocks if b.kind == "hf"]),
+                      _dedupe([b for b in new.blocks if b.kind == "hf"]))
+    img_body, img_hf = image_changes(old, new)
+    changes = sorted(body + img_body, key=_pos) + sorted(hf + img_hf, key=_pos)
     for i, c in enumerate(changes, start=1):
         c.no = i
     return changes
 
 # ------------------------------------------------------------------ report
-def _pages(blocks: list[Block]) -> str:
-    ps = sorted({p for b in blocks for p in b.bboxes()})
-    return "p" + ",".join(map(str, ps)) if ps else "-"
+def _pages(blocks: list[Block], *box_lists: list[Box]) -> str:
+    ps = {p for b in blocks for p in b.bboxes()}
+    ps |= {bx[0] for boxes in box_lists for bx in boxes}
+    return "p" + ",".join(map(str, sorted(ps))) if ps else "-"
 
 def _areas(boxes: list[Box]) -> str:
     return ", ".join(f"p{p} y={t:.0f}-{b:.0f}" for p, _, t, _, b in boxes) or "-"
@@ -408,10 +433,13 @@ def write_changes(changes: list[Change], old: CleanDoc, new: CleanDoc, path: Pat
     out = [f"# {old.source.name} → {new.source.name}   ({len(changes)} changes)   "
            f"~~text~~ = struck through"]
     for c in changes:
-        loc = f"old {_pages(c.old_blocks)} → new {_pages(c.new_blocks)}"
-        b = (c.new_blocks or c.old_blocks)[0]
-        if b.kind == "cell":
-            loc += f" | table T{b.table} row {b.row}"
+        loc = (f"old {_pages(c.old_blocks, c.old_boxes, c.old_anchor)} → "
+               f"new {_pages(c.new_blocks, c.new_boxes, c.new_markers, c.new_anchor)}")
+        blocks = c.new_blocks or c.old_blocks
+        if blocks and blocks[0].kind == "cell":
+            loc += f" | table T{blocks[0].table} row {blocks[0].row}"
+        elif not blocks:
+            loc += " | image"
         out.append(f"\n[{c.no:02d}] {c.kind} | {c.heading} | {loc}")
         if c.old_blocks:
             out.append("     old: " + " | ".join(_marked(x) for x in c.old_blocks))
@@ -423,7 +451,8 @@ def write_changes(changes: list[Change], old: CleanDoc, new: CleanDoc, path: Pat
                    f"markers {len(c.new_markers)}")
         if c.old_anchor or c.new_anchor:
             out.append(f"     crop area: old {_areas(c.old_anchor)} | new {_areas(c.new_anchor)}")
-    path.write_text("\n".join(out), encoding="utf-8")
+    path.write_text("\n".join(out), encoding="utf-8")    
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Compare old and new documents (Step 1c).")
