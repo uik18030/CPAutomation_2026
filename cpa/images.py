@@ -19,6 +19,8 @@ import imagehash
 import pypdfium2 as pdfium
 from PIL import Image
 
+from cpa.convert import get_password
+
 from cpa.clean import (COVER_HEADING, FOOTER_LABEL, HEADER_LABEL, HF_BOTTOM_RATIO,
                        HF_TOP_RATIO, CleanDoc)
 from cpa.compare import Box, Change
@@ -74,7 +76,7 @@ class Pic:
 
 class _Pages:
     def __init__(self, pdf_path):
-        self.pdf = pdfium.PdfDocument(str(pdf_path))
+        self.pdf = pdfium.PdfDocument(str(pdf_path), password=get_password(pdf_path))
         self.cache: dict[int, Image.Image] = {}
 
     def get(self, pno: int) -> Image.Image:

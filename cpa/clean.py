@@ -19,7 +19,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cpa.convert import to_pdf
+from cpa.convert import ensure_password, to_pdf
 from cpa.extract import Char, Document, PageInfo, TableInfo, extract
 
 # ------------------------------------------------------------------ settings
@@ -144,7 +144,9 @@ def heading_title(raw: str) -> str | None:
     if not m:
         return None
     num, sep, title = m["num"], m["sep"], m["title"].strip()
-    if not title or title[0] in _DIGITS + "/／:：-－,，.．%％":
+    if title[0] in "[［(（<＜{｛":                       # "10[km/h]" is a value, not a heading
+        return None
+    if sum(1 for ch in title if ch.isalpha()) < 2:      # "② ③ ④" has no words
         return None
     if num[-1] in _DIGITS and not sep:
         # "3つの条件", "10.5mm" are not headings; "1.1エンディング" is
@@ -455,6 +457,7 @@ def clean(doc: Document, source: Path | None = None) -> CleanDoc:
 def load(src: str | Path, out_dir: str | Path = "output") -> CleanDoc:
     """Convert (if needed), extract and clean one document."""
     pdf = to_pdf(src, out_dir)
+    ensure_password(pdf)
     return clean(extract(pdf), source=Path(src))
 
 # ------------------------------------------------------------------ dump

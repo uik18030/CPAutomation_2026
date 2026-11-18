@@ -16,6 +16,8 @@ from pathlib import Path
 import pypdfium2 as pdfium
 from PIL import Image, ImageDraw
 
+from cpa.convert import get_password
+
 from cpa.clean import Block, load
 from cpa.compare import Box, Change, compare, write_changes
 
@@ -34,7 +36,7 @@ class PageRenderer:
     """Render PDF pages to images, keeping only a few in memory."""
 
     def __init__(self, pdf_path: Path):
-        self.pdf = pdfium.PdfDocument(str(pdf_path))
+        self.pdf = pdfium.PdfDocument(str(pdf_path), password=get_password(pdf_path))
         self.cache: dict[int, Image.Image] = {}
         self.order: list[int] = []
 

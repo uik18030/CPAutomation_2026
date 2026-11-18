@@ -99,3 +99,36 @@ def _word_to_pdf(src: Path, dst: Path) -> None:
             except Exception:
                 pass
         pythoncom.CoUninitialize()
+
+# Part to handle password 
+_PASSWORDS: dict[str, str] = {}
+
+def _key(pdf_path) -> str:
+    return str(Path(pdf_path).resolve()).lower()
+
+def get_password(pdf_path) -> str | None:
+    """Password entered for this PDF in this run (never stored on disk)."""
+    return _PASSWORDS.get(_key(pdf_path))
+
+def ensure_password(pdf_path) -> None:
+    """If the PDF needs a password to open, ask for it (input is hidden)."""
+    import getpass
+    import pypdfium2 as pdfium
+
+    key = _key(pdf_path)
+    if key in _PASSWORDS:
+        return 
+    try:   
+        pdfium.PdfDocument(str(pdf_path)).close()
+        return 
+    except pdfium.PdfiumError:
+        pass
+    for _ in range(3):
+        pw = getpass.getpass(f"Password for {Path(pdf_path).name}: ")
+        try:
+            pdfium.PdfDocument(str(pdf_path), password=pw).close()
+            _PASSWORDS[key] = pw
+            return
+        except pdfium.PdfiumError:
+            print("Wrong password, try again.")
+    raise PermissionError(f"Could not open (wrong password): {pdf_path}")

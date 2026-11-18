@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pdfplumber
 
-from cpa.convert import to_pdf
+from cpa.convert import get_password, to_pdf
 
 BBox = tuple[float, float, float, float]  # x0, top, x1, bottom
 MIN_IMAGE_PT = 6.0                         # smaller pictures (bullets, dots) are ignored
@@ -171,7 +171,7 @@ def extract(pdf_path: str | Path) -> Document:
     tables: list[TableInfo] = []
     images: list[ImageInfo] = []
 
-    with pdfplumber.open(pdf_path) as pdf:
+    with pdfplumber.open(pdf_path, password=get_password(pdf_path) or "") as pdf:
         for pno, page in enumerate(pdf.pages, start=1):
             pages.append(PageInfo(pno, float(page.width), float(page.height)))
 
