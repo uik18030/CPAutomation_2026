@@ -84,7 +84,7 @@ def write_excel(changes: list[Change], shots: dict[int, tuple[Path | None, Path 
             
             ws.Cells(row, COL_NO).Value = c.no
             ws.Cells(row, COL_HEADER).Value = c.heading
-            ws.Clles(row, COL_DESC).Value = c.kind
+            ws.Cells(row, COL_DESC).Value = c.kind
             text = ws.Range(ws.Cells(row, COL_NO), ws.Cells(row, COL_DESC))
             text.VerticalAlignment = XL_TOP
             text.WrapText = True
