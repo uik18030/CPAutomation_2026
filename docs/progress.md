@@ -26,10 +26,14 @@
       - old.pdf: 「リヤシートリマインダ表示は以下条件に従い制御すること。」 struck through? → ?
 - [x] Optional: pin versions with `python -m pip freeze > requirements.txt`
 
-## Next
-- Step 1: proof of concept (convert, extract, compare, red-box screenshots, write CPA_JPN)
-  → check against tests/expected/answer_key.json (6 changes)
 
-## When resuming with the assistant
-- Upload Project_details.md (requirements) + docs/progress.md
-- Say "start Step 1"
+ ## Step 1 
+- [x] 1a Convert + extract (fields locked during Word → PDF export)
+- [x] 1b Clean (cells, paragraphs, headings, strikethrough)
+- [x] 1c Compare (5/5 text rows of the answer key found)
+- [x] 1d Screenshots with red boxes (whole table row, 40pt context)
+- [x] 1e Write CPA_JPN via Excel (dropdowns kept)
+- [x] Tested on real pair (YGC CS 適用書, .docx old vs supplier .pdf new): 4 changes correct,
+      crop fixed for cells empty in one file (row matched through the table grid)
+- [x] 1f Automatic check against answer key
+

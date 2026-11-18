@@ -40,9 +40,8 @@ def _fit(png: Path, max_w: float, max_h: float) -> tuple[float, float]:
     scale = min(max_w / w, max_h / h)
     return w * scale, h * scale
 
-def write_excel(changes: list[Change],
-                shots: dict[int, tuple[Path | None, Path | None]],
-                template: str | Path, out_path: str | Path) -> Path:
+def write_excel(changes: list[Change], shots: dict[int, tuple[Path | None, Path | None]], template: str | Path, out_path: str | Path) -> Path:
+
     import pythoncom
     import win32com.client
 
@@ -50,7 +49,7 @@ def write_excel(changes: list[Change],
     out_path = Path(out_path).resolve()
     if not template.exists():
         raise FileNotFoundError(f"Template not found: {template}")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.parent.mkdir(parent=True, exist_ok=True)
     try:
         shutil.copyfile(template, out_path)
     except PermissionError:
@@ -60,19 +59,20 @@ def write_excel(changes: list[Change],
     excel = None
     wb = None
     try:
-        # Separate, invisible Excel instance: does not touch the user's open workbooks.
         excel = win32com.client.DispatchEx("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
-        excel.ScreenUpdating = False
+        excel.ScreenUpating = False
 
         wb = excel.Workbooks.Open(str(out_path))
-        ws = wb.Worksheets(SHEET)
+        ws = wb.Worksheet(SHEET)
 
-        col_w = min(ws.Columns(COL_OLD).Width, ws.Columns(COL_NEW).Width)  # points
+        col_w = min(ws.Columns(COL_OLD).Width, ws.Columns(COL_NEW).Width)
         max_w = col_w - 2 * PIC_MARGIN
         max_h = MAX_ROW_HEIGHT - 2 * PIC_MARGIN
 
+        #pass 1: text and row heights (nothing placed yet, so nothng can drift)
+        plan: list[tuple[int, Change, dict]] = []
         row = FIRST_ROW
         for c in changes:
             old_png, new_png = shots.get(c.no, (None, None))
@@ -80,39 +80,45 @@ def write_excel(changes: list[Change],
             for col, png in ((COL_OLD, old_png), (COL_NEW, new_png)):
                 if png is not None and Path(png).exists():
                     w, h = _fit(Path(png), max_w, max_h)
-                    pics[col] = (Path(png).resolve(), w, h)
-
-            # 1) row height first (picture positions depend on it)
-            pic_h = max((p[2] for p in pics.values()), default=0.0)
-            ws.Rows(row).RowHeight = max(MIN_ROW_HEIGHT, pic_h + 2 * PIC_MARGIN)
-
-            # 2) text columns
+                    pics[col] = (Path(png).resolve(), w,h)
+            
             ws.Cells(row, COL_NO).Value = c.no
             ws.Cells(row, COL_HEADER).Value = c.heading
-            ws.Cells(row, COL_DESC).Value = c.kind
+            ws.Celles(row, COL_DESC).Value = c.kind
             text = ws.Range(ws.Cells(row, COL_NO), ws.Cells(row, COL_DESC))
             text.VerticalAlignment = XL_TOP
             text.WrapText = True
-
-            # 3) pictures
+            pic_h = max((p[2] for p in pics.values()), default = 0.0)
+            #set the height AFTER wrap text, so Excel cannot change it later
+            ws.Rows(row).RowHeight = max (MIN_ROW_HEIGHT, pic_h + 2 * PIC_MARGIN)
+            plan.append((row, c, pics))
+            row += 1
+        
+        # pass 2: pictures, now that every row position is final
+        misplaced = 0
+        for r, c, pics in plan:
             for col, (png, w, h) in pics.items():
-                cell = ws.Cells(row, col)
-                shp = ws.Shapes.AddPicture(str(png), False, True,
-                                           cell.Left + PIC_MARGIN, cell.Top + PIC_MARGIN, w, h)
+                cell = ws.Cells(r, col)
+                shp = ws.Shapes.Addpicture(str(png), False, True, cell.Left + PIC_MARGIN, cell.Top + PIC_MATGIN, w, h)
                 shp.Placement = XL_MOVE_AND_SIZE
                 shp.Name = f"CP{c.no:03d}_{'old' if col == COL_OLD else 'new'}"
-            row += 1
-
+                if shp.TopLeftCell.Row != r:
+                    misplaced += 1
+        
+        if misplaced:
+            print(f"WARNING: {misplaced} picture(s) not in their own row")
+        
         last_row = row - 1
-        if last_row > FILTER_LAST_ROW:          # extend the filter only when needed
+        if last_row > FILTER_LAST_ROW:
             ws.AutoFilterMode = False
             ws.Range(f"{FILTER_RANGE_PREFIX}{last_row}").AutoFilter()
-
+        
         wb.Save()
+    
     finally:
         if wb is not None:
             try:
-                wb.Close(False)                 # already saved above
+                wb.Close(False)
             except Exception:
                 pass
         if excel is not None:
@@ -122,6 +128,8 @@ def write_excel(changes: list[Change],
                 pass
         pythoncom.CoUninitialize()
     return out_path
+    
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Write changes into the CPA template (Step 1e).")
