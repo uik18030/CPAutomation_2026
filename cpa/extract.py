@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ctypes
+import re
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,6 +20,9 @@ from cpa.convert import get_password, to_pdf
 
 BBox = tuple[float, float, float, float]  # x0, top, x1, bottom
 MIN_IMAGE_PT = 6.0                         # smaller pictures (bullets, dots) are ignored
+ITALIC_SKEW = 0.1
+BOLD_FONT_RE = re.compile(r"(?i)bold|black|heavy|semibold|demibold|-W[6-9]$")
+ITALIC_FONT_RE = re.compile(r"(?i)italic|oblique")
 
 @dataclass
 class Char:
@@ -28,6 +34,8 @@ class Char:
     font: str
     size: float
     color: tuple | None
+    bold: bool = False
+    italic: bool = False
 
 @dataclass
 class Line:
@@ -92,6 +100,48 @@ def _color(c: dict) -> tuple | None:
         return tuple(round(float(x), 3) for x in v)
     except (TypeError, ValueError):
         return None
+
+def _italic(c: dict) -> bool:
+    """Italic from the font name or a slanted glyph (Word/LibreOffice fake italic)."""
+    if ITALIC_FONT_RE.search(c.get("fontname", "")):
+        return True
+    m = c.get("matrix")
+    if not m or len(m) < 4:
+        return False
+    a, b, cc, d = (float(x) for x in m[:4])
+    return abs(b) < 1e-6 and abs(d) > 1e-6 and abs(cc / d) > ITALIC_SKEW
+
+def _stroked_text(pdf_path, page_count: int) -> dict[int, list[BBox]]:
+    """Areas of text drawn with fill + stroke = fake bold (Word/LibreOffice for Japanese fonts).
+
+    pdfplumber cannot see the text render mode, so it is read with pdfium.
+    Returns page -> [(x0, top, x1, bottom)] in pdfplumber coordinates.
+    """
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as pdfium_c
+
+    stroked_modes = { pdfium_c.FPDF_TEXTRENDERMODE_FILL_STROKE,
+                      pdfium_c.FPDF_TEXTRENDERMODE_FILL_STROKE_CLIP}
+    out: dict[int, list[BBox]] = {}
+    pdf = pdfium.PdfDocument(str(pdf_path), password=get_password(pdf_path))
+    try:
+        for pno in range(1, min(page_count, len(pdf))+1):
+            page = pdf[pno -1]
+            mx0, _, _, mtop = page.get_mediabox()
+            for obj in page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_TEXT], max_depth=15):
+                if pdfium_c.FPDFTextObj_GetTextRenderMode(obj.raw) not in stroked_modes:
+                    continue
+                l, b, r, t = (ctypes.c_float() for _ in range(4))
+                if pdfium_c.FPDFPageObj_GetBounds(obj.raw, l, b, r, t):
+                    out.setdefault(pno, []).append(
+                        (l.value - mx0, mtop -t.value, r.value - mx0, mtop - b.value))
+            page.close()
+    finally:
+        pdf.close()
+    return out
+
+def _in_any(x: float, y: float, boxes: list[BBox]) -> bool:
+    return any(b[0] - 0.5 <= x <= b[2] + 0.5 and b[1] - 0.5 <= y <= b[3] + 0.5 for b in boxes)
 
 def _bbox(v) -> BBox:
     return (float(v[0]), float(v[1]), float(v[2]), float(v[3]))
@@ -172,8 +222,10 @@ def extract(pdf_path: str | Path) -> Document:
     images: list[ImageInfo] = []
 
     with pdfplumber.open(pdf_path, password=get_password(pdf_path) or "") as pdf:
+        stroked = _stroked_text(pdf_path, len(pdf.pages))
         for pno, page in enumerate(pdf.pages, start=1):
             pages.append(PageInfo(pno, float(page.width), float(page.height)))
+            fake_bold = stroked.get(pno, [])
 
             for tl in page.extract_text_lines(strip=True, return_chars=True):
                 chars = [
@@ -184,6 +236,11 @@ def extract(pdf_path: str | Path) -> Document:
                         font=c.get("fontname", ""),
                         size=round(float(c.get("size", 0)), 2),
                         color=_color(c),
+                        bold=bool(BOLD_FONT_RE.search(c.get("fontname", ""))) or (
+                            bool(fake_bold) and _in_any((float(c["x0"]) + float(c["x1"])) /2, 
+                                                        (float(c["top"]) + float(c["bottom"])) /2, 
+                                                        fake_bold)),
+                        italic=_italic(c),
                     )
                     for c in tl["chars"]
                 ]
@@ -235,8 +292,10 @@ def write_dump(doc: Document, path: Path) -> None:
         for l in (l for l in doc.lines if l.page == p.number):
             sizes = sorted({c.size for c in l.chars})
             colors = sorted({str(c.color) for c in l.chars})
+            style = "".join((" bold" if any(c.bold for c in l.chars) else "",
+                             " italic" if any(c.italic for c in l.chars) else ""))
             out.append(f"[y={l.top:6.1f}-{l.bottom:6.1f} x={l.x0:6.1f}-{l.x1:6.1f} "
-                       f"size={sizes} color={colors}] {l.text}")
+                       f"size={sizes} color={colors}{style}] {l.text}")
         out.append(f"--- thin horizontal shapes on page {p.number}")
         for s in (s for s in doc.hsegments if s.page == p.number):
             out.append(f"  y={s.y:6.1f} x={s.x0:6.1f}-{s.x1:6.1f} ({s.kind})")
