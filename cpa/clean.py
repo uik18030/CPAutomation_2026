@@ -144,6 +144,8 @@ def heading_title(raw: str) -> str | None:
     if not m:
         return None
     num, sep, title = m["num"], m["sep"], m["title"].strip()
+    if not title or title[0] in _DIGITS + "/／:：-－,，.．%％":
+        return None
     if title[0] in "[［(（<＜{｛":                       # "10[km/h]" is a value, not a heading
         return None
     if sum(1 for ch in title if ch.isalpha()) < 2:      # "② ③ ④" has no words

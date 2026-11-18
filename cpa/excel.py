@@ -84,7 +84,7 @@ def write_excel(changes: list[Change], shots: dict[int, tuple[Path | None, Path 
             
             ws.Cells(row, COL_NO).Value = c.no
             ws.Cells(row, COL_HEADER).Value = c.heading
-            ws.Celles(row, COL_DESC).Value = c.kind
+            ws.Clles(row, COL_DESC).Value = c.kind
             text = ws.Range(ws.Cells(row, COL_NO), ws.Cells(row, COL_DESC))
             text.VerticalAlignment = XL_TOP
             text.WrapText = True
@@ -99,7 +99,7 @@ def write_excel(changes: list[Change], shots: dict[int, tuple[Path | None, Path 
         for r, c, pics in plan:
             for col, (png, w, h) in pics.items():
                 cell = ws.Cells(r, col)
-                shp = ws.Shapes.Addpicture(str(png), False, True, cell.Left + PIC_MARGIN, cell.Top + PIC_MATGIN, w, h)
+                shp = ws.Shapes.AddPicture(str(png), False, True, cell.Left + PIC_MARGIN, cell.Top + PIC_MARGIN, w, h)
                 shp.Placement = XL_MOVE_AND_SIZE
                 shp.Name = f"CP{c.no:03d}_{'old' if col == COL_OLD else 'new'}"
                 if shp.TopLeftCell.Row != r:
@@ -128,7 +128,7 @@ def write_excel(changes: list[Change], shots: dict[int, tuple[Path | None, Path 
                 pass
         pythoncom.CoUninitialize()
     return out_path
-    
+
 
 
 def main() -> None:
