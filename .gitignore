@@ -1,10 +1,16 @@
-@"
+# Confidential documents - never upload
+*.pdf
+*.docx
+*.doc
+# Uncomment to allow the test files (only if company rules allow):
+# !tests/data/File_Old_update.docx
+# !tests/data/File_New_update.docx
+# !tests/data/Format_Old.docx
+# !tests/data/Format_New.docx
+
 # Local documents and results - never upload
 data/
 output/
-
-# Uncomment to keep the test documents off GitHub too:
-# tests/data/
 
 # Virtual environment (large, PC-specific; recreate with requirements.txt)
 .venv/
@@ -17,5 +23,4 @@ build/
 dist/
 
 # Office lock files (created while a file is open)
-~`$*
-"@ | Set-Content -Path .gitignore -Encoding ascii
+~$*
