@@ -62,10 +62,10 @@ def write_excel(changes: list[Change], shots: dict[int, tuple[Path | None, Path 
         excel = win32com.client.DispatchEx("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
-        excel.ScreenUpating = False
+        excel.ScreenUpdating = False
 
         wb = excel.Workbooks.Open(str(out_path))
-        ws = wb.Worksheet(SHEET)
+        ws = wb.Worksheets(SHEET)
 
         col_w = min(ws.Columns(COL_OLD).Width, ws.Columns(COL_NEW).Width)
         max_w = col_w - 2 * PIC_MARGIN
