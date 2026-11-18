@@ -49,7 +49,7 @@ def write_excel(changes: list[Change], shots: dict[int, tuple[Path | None, Path 
     out_path = Path(out_path).resolve()
     if not template.exists():
         raise FileNotFoundError(f"Template not found: {template}")
-    out_path.parent.mkdir(parent=True, exist_ok=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         shutil.copyfile(template, out_path)
     except PermissionError:
