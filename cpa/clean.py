@@ -52,7 +52,7 @@ class TChar:
     font: str = ""
     color: tuple | None = None
     struck: bool = False
-    virtual: bool = False    # inserted space or paragraph break, no box on the page\
+    virtual: bool = False    # inserted space or paragraph break, no box on the page
     bold: bool = False 
     italic: bool = False
     underline: bool = False
@@ -216,6 +216,7 @@ def _lined_ids(doc: Document, segs_by_page: dict[int, list[list[float]]], band: 
             for x0, x1, ylo, yhi in segs:
                 if band_lo <= (ylo + yhi) / 2 <= band_hi and min(c.x1, x1) - max(c.x0, x0) >= w * STRIKE_MIN_COVER:
                     found.add(id(c))
+                    break
     return found
 
 def _struck_ids(doc: Document) -> set[int]:
