@@ -1,6 +1,8 @@
 """Step 1b: turn extracted lines into clean blocks for comparison.
 
 - strikethrough: thin line through the middle of characters -> char.struck
+- underline: thin line just below characters (not a table border) -> char.underline
+- bold / italic come from extract (font name, fake bold, slant)
 - table text sorted into cells (table / row / column)
 - body lines joined into paragraphs
 - headers/footers kept separately, page numbers removed
@@ -29,6 +31,8 @@ STRIKE_BAND = (0.35, 0.65)  # strike line must cross this part of the character 
 STRIKE_Y_TOL = 1.5          # pt: pieces at about the same height are joined
 STRIKE_X_GAP = 1.0          # pt: max gap between pieces that are joined
 STRIKE_MIN_COVER = 0.5      # line must cover at least this part of a character's width
+UNDERLINE_BAND = (0.80, 1.30)
+BORDER_TOL = 1.5
 HEADING_MAX_LEN = 40
 COVER_HEADING = "表紙"
 HEADER_LABEL = "ヘッダー"
@@ -48,7 +52,11 @@ class TChar:
     font: str = ""
     color: tuple | None = None
     struck: bool = False
-    virtual: bool = False    # inserted space or paragraph break, no box on the page
+    virtual: bool = False    # inserted space or paragraph break, no box on the page\
+    bold: bool = False 
+    italic: bool = False
+    underline: bool = False
+
 
 @dataclass
 class Block:
@@ -192,24 +200,44 @@ def _merge_hsegments(doc: Document) -> dict[int, list[list[float]]]:
             merged.append([s.x0, s.x1, s.y, s.y])
     return out
 
-def _struck_ids(doc: Document) -> set[int]:
-    segs_by_page = _merge_hsegments(doc)
-    lo, hi = STRIKE_BAND
-    struck: set[int] = set()
+def _lined_ids(doc: Document, segs_by_page: dict[int, list[list[float]]], band: tuple[float, float]) -> set[int]:
+    """Character coressed by a thin line inside *band* of thier height (0 = top, 1 = bottom). """
+    lo, hi = band
+    found: set[int] = set()
     for line in doc.lines:
         segs = segs_by_page.get(line.page)
         if not segs:
             continue
         for c in line.chars:
-            h, w = c.bottom - c.top, c.x1 - c.x0
+            h,w = c.bottom - c.top, c.x1 - c.x0 
             if h <= 0 or w <= 0 or c.text.isspace():
                 continue
             band_lo, band_hi = c.top + h * lo, c.top + h * hi
             for x0, x1, ylo, yhi in segs:
                 if band_lo <= (ylo + yhi) / 2 <= band_hi and min(c.x1, x1) - max(c.x0, x0) >= w * STRIKE_MIN_COVER:
-                    struck.add(id(c))
-                    break
-    return struck
+                    found.add(id(c))
+    return found
+
+def _struck_ids(doc: Document) -> set[int]:
+    return _lined_ids(doc, _merge_hsegments(doc), STRIKE_BAND)
+
+def _underlined_ids(doc: Document) -> set[int]:
+    """Like strikethrough, but the line is just below the text and is not a table border."""
+    edges: dict[int, list[tuple[float, float, float]]] = {}
+    for t in doc.tables:
+        for row in t.rows:
+            for cell in row:
+                if cell:
+                    edges.setdefault(t.page, []).extend(
+                        [(cell[1], cell[0], cell[2]), (cell[3], cell[0], cell[2])])
+    segs: dict[int, list[list[float]]] = {}
+    for page, merged in _merge_hsegments(doc).items():
+        for m in merged:
+            y = (m[2] + m[3]) / 2 
+            if any(abs(y - ey) <= BORDER_TOL and m[0] < ex1 and m[1] > ex0 for ey, ex0, ex1 in edges.get(page, [])):
+                continue
+            segs.setdefault(page, []).append(m)
+    return _lined_ids(doc, segs, UNDERLINE_BAND)
 
     
 def _is_cjk(ch: str) -> bool:
@@ -218,7 +246,7 @@ def _is_cjk(ch: str) -> bool:
 
 
 # ------------------------------------------------------------------ lines -> subs
-def _make_sub(page: int, chars: list[Char], struck: set[int]) -> _Sub | None:
+def _make_sub(page: int, chars: list[Char], struck: set[int], underlined: set[int] = frozenset()) -> _Sub | None:
     chars = sorted(chars, key=lambda c: c.x0)
     real = [c for c in chars if not c.text.isspace()]
     if not real:
@@ -233,10 +261,12 @@ def _make_sub(page: int, chars: list[Char], struck: set[int]) -> _Sub | None:
                     tcs.append(TChar(" ", "", page, virtual=True))
                     raw_parts.append(" ")
         is_struck = id(c) in struck
+        is_under = id(c) in underlined
         for ch in c.text:
             for k in norm_char(ch):
                 tcs.append(TChar(k, ch, page, c.x0, c.top, c.x1, c.bottom,
-                                 c.size, c.font, c.color, is_struck, False))
+                                 c.size, c.font, c.color, is_struck, False,
+                                 c.bold, c.italic, is_under))
         raw_parts.append(c.text)
         prev = c
     return _Sub(page, min(c.top for c in real), max(c.bottom for c in real),
@@ -345,6 +375,7 @@ def _table_mapping(doc: Document, cell_subs: dict) -> dict[int, tuple[int, int, 
 # ------------------------------------------------------------------ main step
 def clean(doc: Document, source: Path | None = None) -> CleanDoc:
     struck = _struck_ids(doc)
+    underlined = _underlined_ids(doc)
     page_h = {p.number: p.height for p in doc.pages}
     tables_by_page: dict[int, list[tuple[int, TableInfo]]] = {}
     for ti, t in enumerate(doc.tables):
@@ -357,7 +388,7 @@ def clean(doc: Document, source: Path | None = None) -> CleanDoc:
     for line in doc.lines:
         h = page_h[line.page]
         if line.top < h * HF_TOP_RATIO or line.bottom > h * HF_BOTTOM_RATIO:
-            sub = _make_sub(line.page, line.chars, struck)
+            sub = _make_sub(line.page, line.chars, struck, underlined)
             if sub:
                 hf_subs.append((HEADER_LABEL if line.top < h * HF_TOP_RATIO else FOOTER_LABEL, sub))
             continue
@@ -365,7 +396,7 @@ def clean(doc: Document, source: Path | None = None) -> CleanDoc:
         for c in line.chars:
             groups.setdefault(_cell_of(c, tables_by_page.get(line.page, [])), []).append(c)
         for key, chars in groups.items():
-            sub = _make_sub(line.page, chars, struck)
+            sub = _make_sub(line.page, chars, struck, underlined)
             if sub is None:
                 continue
             if key is None:
