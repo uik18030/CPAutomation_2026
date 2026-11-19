@@ -33,7 +33,7 @@ def texts(c: Change) -> tuple[str, str, str]:
     return old, new, " ".join(c.details)
 
 def is_pending(exp: dict) -> bool:
-    if exp.get("old") or exp.get("new"):
+    if exp.get("old") or exp.get("new") or exp.get("text"):
         return False
     ch = str(exp.get("change", "")).lower()
     return any(w in ch for w in PENDING_WORDS)
@@ -52,14 +52,21 @@ def matches(exp: dict, c: Change) -> bool:
     if n and not o and n in old_t:        # "added" text must not already be in old
         return False
     ch = exp.get("change")
-    if ch and not (o or n) and str(ch).lower() not in det.lower():
-        return False
+    t = norm(exp.get("test", ""))
+    if t:
+        #formatting change: one detail line must name both the change and the text
+        if not any(str(ch or "").lower() in d.lower() and t in norm(d) for d in c.details):
+            return False
+        elif ch and not (o or n) and str(ch).lower() not in det.lower():
+            return False
     return True
 
 def describe(exp: dict) -> str:
     parts = [f"#{exp.get('no', '?')}", str(exp.get("header", "")), str(exp.get("type", ""))]
     if exp.get("old") or exp.get("new"):
         parts.append(f"「{exp.get('old', '')}」→「{exp.get('new', '')}」")
+    if exp.get("text"):
+        parts.append(f"「{exp['text']}」")
     if exp.get("change"):
         parts.append(f"({exp['change']})")
     return " ".join(parts)
