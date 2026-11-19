@@ -1,0 +1,9 @@
+[
+  {"no": 1, "header": "概要", "type": "Modified", "text": "新たに", "change": "font colour"},
+  {"no": 2, "header": "概要", "type": "Modified", "text": "警告音", "change": "bold added"},
+  {"no": 3, "header": "概要", "type": "Modified", "text": "容易", "change": "italic added"},
+  {"no": 4, "header": "概要", "type": "Modified", "text": "重要", "change": "underline added"},
+  {"no": 5, "header": "概要", "type": "Modified", "text": "サイズ", "change": "font size"},
+  {"no": 6, "header": "概要", "type": "Modified", "text": "T_dis_RSP", "change": "font colour"},
+  {"no": 7, "header": "条件信号", "type": "Modified", "text": "[3D5]", "change": "bold added"}
+]
