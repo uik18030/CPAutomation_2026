@@ -52,7 +52,7 @@ def matches(exp: dict, c: Change) -> bool:
     if n and not o and n in old_t:        # "added" text must not already be in old
         return False
     ch = exp.get("change")
-    t = norm(exp.get("test", ""))
+    t = norm(exp.get("text", ""))
     if t:
         #formatting change: one detail line must name both the change and the text
         if not any(str(ch or "").lower() in d.lower() and t in norm(d) for d in c.details):
