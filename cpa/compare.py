@@ -231,7 +231,7 @@ def _rgb(c: tuple | None) -> tuple[float, float, float] | None:
     if not c:
         return None
     try:
-        v = [min(1.0, max(0,0, float(x))) for x in c]
+        v = [min(1.0, max(0.0, float(x))) for x in c]
     except (TypeError, ValueError):
         return None
     if len(v) == 1:
@@ -304,6 +304,7 @@ def _diff_pair(o: Block, n: Block):
                     new_idx.add(j1 + k)
             if run:
                 details.append(f"{', '.join(run_diff)} 「{_txt(nc, run[0], run[-1] + 1)}」")
+        elif tag == "replace":
             new_idx.update(range(j1, j2))
             details.append(f"「{_txt(oc, i1, i2)}」 → 「{_txt(nc, j1, j2)}」")
         elif tag == "insert":
