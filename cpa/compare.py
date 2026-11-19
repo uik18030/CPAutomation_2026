@@ -7,6 +7,7 @@ Writes output/changes.txt (UTF-8).
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -17,6 +18,11 @@ from cpa.clean import Block, CleanDoc, TChar, _marked, load
 MATCH_MIN = 0.5          # blocks at least this similar are paired as "Modified"
 COL_BONUS = 0.1          # table cells in the same column are preferred
 MAX_PAIR_CELLS = 250_000 # safety limit for the pairing table (n_old x n_new)
+SIZE_TOL = 0.3
+COLOR_TOL = 0.15
+SYSTEMATIC_RATIO = 0.3
+SYSTEMATIC_MIN = 200
+
 
 Box = tuple[int, float, float, float, float]  # page, x0, top, x1, bottom
 
@@ -209,6 +215,69 @@ def _align(O: list[Block], N: list[Block]) -> list[tuple]:
             ops += _pair_range(O, N, i1, i2, j1, j2)
     return ops
 
+# ------------------------------------------------------------------ formatting
+_COLOR_NAMES = {
+    "black":(0, 0, 0), "white":(1, 1, 1), "gray":(0.5, 0.5, 0.5), "red":(1, 0, 0),
+    "dark red":(0.75, 0, 0), "orange":(1, 0.65, 0), "yellow":(1, 1, 0), "green":(0, 0.69, 0.31),
+    "dark green": (0, 0.5, 0), "cyan": (0, 1, 1), "blue": (0, 0, 1), "dark blue": (0, 0, 0.5),
+    "light blue": (0, 0.69, 0.94), "purple": (0.44, 0.19, 0.63), "magenta": (1, 0, 1),   
+}
+
+_STYLE_STATS: Counter = Counter()
+_IGNORED:set[str] = set()
+
+def _rgb(c: tuple | None) -> tuple[float, float, float] | None:
+    """Gray / RGB / CMYK colour -> RGB (0-1). None if unknown."""
+    if not c:
+        return None
+    try:
+        v = [min(1.0, max(0,0, float(x))) for x in c]
+    except (TypeError, ValueError):
+        return None
+    if len(v) == 1:
+        return (v[0], v[0], v[0])
+    if len(v) == 3:
+        return (v[0], v[1], v[2])
+    if len(v) == 4:
+        k = v[3]
+        return tuple((1 - x) * (1-k) for x in v[:3])
+    return None
+
+def _color_name(rgb: tuple[float, float, float]) -> str:
+    name = min(_COLOR_NAMES, key=lambda k: sum((a - b) ** 2 for a, b in zip(_COLOR_NAMES[k], rgb)))
+    hexv = "#" + "".join(f"{round(x * 255):02X}" for x in rgb)
+    return f"{name} {hexv}"
+
+def _size(v:float) -> str:
+    return f"{v:.1f}".rstrip("0").rstrip(".")
+
+def _format_diff(a: TChar, b: TChar) -> tuple[str, ...]:
+    """What looks different between two equal characters (empty = nothing)."""
+    out: list[str] = []
+    if a.struck != b.struck:
+        out.append(f"strikethrough {'removed' if a.struck else 'added'}")
+    for attr in ("bold", "italic", "underline"):
+        if attr not in _IGNORED and getattr(a, attr) != getattr(b, attr):
+            out.append(f"{attr} {'removed' if getattr(a, attr) else 'added'}")
+    if "colour" not in _IGNORED:
+        ca, cb = _rgb(a.color), _rgb(b.color)
+        if ca and cb and max(abs(x - y) for x, y in zip(ca, cb)) > COLOR_TOL:
+            out.append(f"font colour {_color_name(ca)} → {_color_name(cb)}")
+    if "size" not in _IGNORED and a.size and b.size and abs(a.size - b.size) > SIZE_TOL:
+        out.append(f"font size {_size(a.size)} → {_size(b.size)}")
+    return tuple(out)
+
+def _count_styles(diff: tuple[str, ...]) -> None:
+    _STYLE_STATS["chars"] += 1
+    for d in diff:
+        _STYLE_STATS[_attr_of(d)] += 1
+
+def _attr_of(detail: str) -> str:
+    for attr in ("strikethrough", "bold", "italic", "underline", "colour", "size"):
+        if attr in detail:
+            return attr
+    return detail
+
 # ------------------------------------------------------------------ character diff
 def _diff_pair(o: Block, n: Block):
     oc, nc = _compact(o), _compact(n)
@@ -220,22 +289,21 @@ def _diff_pair(o: Block, n: Block):
 
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
+            # formatting: one detail line per run of characters with the same difference
             run: list[int] = []
-            run_removed = None
+            run_diff: tuple[str, ...] = ()
             for k in range(i2 - i1):
-                a, b = oc[i1 + k][1], nc[j1 + k][1]
-                if a.struck != b.struck:
-                    if run and (j1 + k != run[-1] + 1 or a.struck != run_removed):
-                        details.append(f"strikethrough {'removed' if run_removed else 'added'} "
-                                       f"「{_txt(nc, run[0], run[-1] + 1)}」")
-                        run = []
+                diff = _format_diff(oc[i1 + k][1], nc[j1 + k][1])
+                _count_styles(diff)
+                if run and (not diff or diff != run_diff or j1 + k != run[-1] + 1):
+                    details.append(f"{', '.join(run_diff)} 「{_txt(nc, run[0], run[-1] + 1)}」")
+                    run = []
+                if diff:
                     run.append(j1 + k)
-                    run_removed = a.struck
+                    run_diff = diff
                     new_idx.add(j1 + k)
             if run:
-                details.append(f"strikethrough {'removed' if run_removed else 'added'} "
-                               f"「{_txt(nc, run[0], run[-1] + 1)}」")
-        elif tag == "replace":
+                details.append(f"{', '.join(run_diff)} 「{_txt(nc, run[0], run[-1] + 1)}」")
             new_idx.update(range(j1, j2))
             details.append(f"「{_txt(oc, i1, i2)}」 → 「{_txt(nc, j1, j2)}」")
         elif tag == "insert":
@@ -404,14 +472,32 @@ def _pos(c: Change) -> tuple:
         return (b.page, b.top)
     return _first_box(c.old_boxes, c.old_anchor) or (10 ** 9, 0.0)
 
-def compare(old: Cleandoc, new: CLeanDoc) -> list[Change]:
+def _systematic() -> set[str]:
+    """Format attributes that differ almost everywhere: the two PDFs were made differently
+    (e.g . Word vs supplier tool), so these differnces are not real changes."""
+    total = _STYLE_STATS["chars"]
+    if total < SYSTEMATIC_MIN:
+        return set()
+    return {a for a in ("bold", "italic", "underline", "colour", "size")
+            if _STYLE_STATS[a] > total * SYSTEMATIC_RATIO}
+
+def compare(old: CleanDoc, new: CleanDoc) -> list[Change]:
     from cpa.images import image_changes  # imported here to avoid a circular import
 
     old_rows = getattr(old, "table_rows", None) or {}
-    new_rows = getattr(old, "table_rows", None) or {}
+    new_rows = getattr(new, "table_rows", None) or {}
     ob = [b for b in old.blocks if b.kind != "hf"]
     nb = [b for b in new.blocks if b.kind != "hf"]
+    _STYLE_STATS.clear()
+    _IGNORED.clear()
     body = _changes_for(ob, nb, old_rows, new_rows)
+    skip = _systematic()
+    if skip:
+        print(f"WARNING: {', '.join(sorted(skip))} differ(s) on most of the text "
+              f"(PDFs made by different tools?) - these format changes are ignored; "
+              f"check by hand if the whole document's format really changed")
+        _IGNORED.update(skip)
+        body = _changes_for(ob, nb, old_rows, new_rows)
     hf = _changes_for(_dedupe([b for b in old.blocks if b.kind == "hf"]),
                       _dedupe([b for b in new.blocks if b.kind == "hf"]))
     img_body, img_hf = image_changes(old, new)
