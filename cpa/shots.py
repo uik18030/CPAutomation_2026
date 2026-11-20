@@ -132,7 +132,8 @@ def make_shots(changes: list[Change], old_pdf: Path, new_pdf: Path,
             old_reg = _regions(_with_row_context(c.old_blocks, old_doc), c.old_boxes, c.old_anchor)
             new_reg = _regions(_with_row_context(c.new_blocks, new_doc), c.new_boxes,
                                c.new_markers, c.new_anchor)
-            o = _shot(old_r, old_reg, c.old_boxes, [], shots_dir / f"{c.no:02d}_old.png")
+            o = None if c.kind == "New" else _shot(old_r, old_reg, c.old_boxes, [], 
+                                                   shots_dir / f"{c.no:02d}_old.png")
             n = _shot(new_r, new_reg, c.new_boxes, c.new_markers, shots_dir / f"{c.no:02d}_new.png")
             result[c.no] = (o, n)
     finally:
