@@ -143,6 +143,48 @@ def _stroked_text(pdf_path, page_count: int) -> dict[int, list[BBox]]:
 def _in_any(x: float, y: float, boxes: list[BBox]) -> bool:
     return any(b[0] - 0.5 <= x <= b[2] + 0.5 and b[1] - 0.5 <= y <= b[3] + 0.5 for b in boxes)
 
+def _rgb_spread(c) -> float:
+    """How colourful a fill is (0 = black/grey/white, 1 = pure cyan/yellow/red)"""
+    if not isinstance(c, (tuple, list)) or len(c) != 3:
+        return 0.0
+    try:
+        v = [float(x) for x in c]
+    except (TypeError, ValueError):
+        return 0.0
+    return max(v) - min(v)
+
+def _table_page(page):
+    """The page without text decorarations, for finding table borders.
+    
+    A strikethrough or underline (a thin line through or under text that does not
+    reach pass it) and a highlight (a coloured box behind text) would otherwise be 
+    taken as extra table borders and cut cells into extra rows and colums.
+    """
+    chars = [c for c in page.chars if not c["text"].isspace()]
+    if not chars:
+        return page
+
+    def text_under(x0: float, top: float, x1: float, bottom: float) -> list:
+        return [c for c in chars if c["x0"] < x1 and c["x1"] > x0 and c ["top"] < bottom and c["bottom"] > top]
+
+    def decoration(obj) -> bool:
+        x0, top, x1, bottom = obj["x0"], obj["top"], obj["x1"], obj["bottom"]
+        if obj.get("object_type") == "rect" and obj.get("fill") and bottom - top > 1.5:
+            # highlight: colourful box with text inside
+            return _rgb_spread(obj.get("non_stroking_color")) >= 0.5 and bool(text_under(x0, top, x1, bottom))
+        if bottom - top > 1.5:
+            return False
+        y = (top + bottom) / 2
+        near = [c for c in chars if c["x0"] < x1 and c["x1"] > x0
+                and c["top"] + 0.25 * (c["bottom"] - c["top"]) <= y <= c["bottom"] + 2.5]
+        if not near:
+            return False
+        # a border runs on past the text; a strike/underline stays within it
+        return x0 >= min(c["x0"] for c in near) - 2.0 and x1 <= max(c["x1"] for c in near) + 2.0
+
+    return page.filter(lambda obj: obj.get("object_type") not in ("rect", "line") or not decoration(obj))
+
+
 def _bbox(v) -> BBox:
     return (float(v[0]), float(v[1]), float(v[2]), float(v[3]))
 
@@ -257,7 +299,7 @@ def extract(pdf_path: str | Path) -> Document:
                     segs.append(HSegment(pno, float(ln["x0"]), float(ln["x1"]),
                                          float(ln["top"]), "line"))
 
-            for t in page.find_tables():
+            for t in _table_page(page).find_tables():
                 rows: list[list[BBox | None]] = []
                 for r in t.rows:
                     cells = [_bbox(c) if c else None for c in r.cells]
