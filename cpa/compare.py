@@ -219,16 +219,139 @@ def _pair_range(O: list[Block], N: list[Block], i1: int, i2: int, j1: int, j2: i
         b += 1
     return ops
 
+# ------------------------------------------------------------------ units: paragraph or whole table row
+@dataclass
+class _Unit:
+    """What is lined up between old and new: one paragraph/heading, or one whole table row."""
+    idx: list[int]                     # block indices (a row: its cells, left to right)
+    cells: dict[int, str] | None       # table row: column -> text; None for a paragraph
+    key: tuple[str, str] = ("", "")    # (group, text) - what the unit says
+    where: str = ""                    # section heading it is in (keeps repeated rows apart)
+
+def _units(B: list[Block]) -> list[_Unit]:
+    out: list[_Unit] = []
+    for i, b in enumerate(B):
+        last = B[out[-1].idx[0]] if out else None
+        if (b.kind == "cell" and last is not None and last.kind == "cell"
+                and (last.table, last.row) == (b.table, b.row)):
+            out[-1].idx.append(i)
+        else:
+            out.append(_Unit([i], {} if b.kind == "cell" else None))
+    for u in out:
+        u.where = B[u.idx[0]].heading
+        if u.cells is None:
+            u.key = _key(B[u.idx[0]])
+        else:
+            u.idx.sort(key=lambda i: B[i].col)
+            u.cells = {B[i].col: _ctext(B[i]) for i in u.idx}
+            u.key = ("row", "|".join(u.cells.values()))
+    return out
+
+def _make_unit_sim(O: list[Block], N: list[Block]):
+    def sim(uo: _Unit, un: _Unit) -> float:
+        if (uo.cells is None) != (un.cells is None):
+            return 0.0
+        if uo.cells is None:
+            return _sim(O[uo.idx[0]], N[un.idx[0]])
+        # table rows: whole-row text, or share of cells that are the same in the same column
+        same = sum(1 for c, t in uo.cells.items() if t and t == un.cells.get(c))
+        by_col = same / max(len(uo.cells), len(un.cells), 1)
+        a, b = uo.key[1], un.key[1]
+        sm = SequenceMatcher(None, a, b, autojunk=False)
+        if sm.real_quick_ratio() < MATCH_MIN and by_col < MATCH_MIN:
+            return 0.0
+        return max(sm.ratio(), by_col)
+    return sim
+
+def _pair_moved(UO: list[_Unit], UN: list[_Unit], uops: list[tuple], sim_fn=None) -> list[tuple]:
+    """A deleted unit whose exact text was added somewhere else only moved: pair them.
+
+    Only text that occurs once in each document counts (a repeated table header row
+    or caption is not "moved", it belongs to its own table).
+    """
+    once_old = Counter(u.key for u in UO)
+    once_new = Counter(u.key for u in UN)
+    added: dict[tuple, list[int]] = {}
+    for k, op in enumerate(uops):
+        if op[0] == "ins":
+            added.setdefault(UN[op[1]].key, []).append(k)
+    out = list(uops)
+    drop: set[int] = set()
+    for k, op in enumerate(uops):
+        if op[0] != "del":
+            continue
+        key = UO[op[1]].key
+        if (len(key[1].replace("|", "")) < MOVED_MIN_CHARS or not added.get(key)
+                or once_old[key] != 1 or once_new[key] != 1):
+            continue
+        kk = added[key].pop(0)
+        out[k] = ("pair", op[1], uops[kk][1])
+        drop.add(kk)
+
+    # moved and edited: leftover deleted/added units that are each other's best close match
+    if sim_fn is not None:
+        dels = [k for k, op in enumerate(out) if op[0] == "del"]
+        adds = [k for k, op in enumerate(out) if op[0] == "ins" and k not in drop]
+        if dels and adds and len(dels) * len(adds) <= MAX_PAIR_CELLS:
+            score = {(a, b): sim_fn(UO[out[a][1]], UN[out[b][1]]) for a in dels for b in adds}
+            for a in dels:
+                b = max(adds, key=lambda x: score[(a, x)], default=None)
+                if (b is None or b in drop or score[(a, b)] < MOVED_SIM
+                        or max(dels, key=lambda x: score[(x, b)]) != a):
+                    continue
+                out[a] = ("pair", out[a][1], out[b][1])
+                drop.add(b)
+    return [op for k, op in enumerate(out) if k not in drop]
+
+def _expand_pair(O: list[Block], N: list[Block], uo: _Unit, un: _Unit) -> list[tuple]:
+    """Paired units -> paired blocks. Rows: cells lined up by text, then left to right."""
+    if uo.cells is None:
+        return [("pair", uo.idx[0], un.idx[0])]
+    oi, ni = uo.idx, un.idx
+    sm = SequenceMatcher(None, [_ctext(O[i]) for i in oi], [_ctext(N[j]) for j in ni], autojunk=False)
+    ops: list[tuple] = []
+
+    def nxt_new(j: int) -> int:
+        return ni[j] if j < len(ni) else ni[-1] + 1
+
+    def nxt_old(i: int) -> int:
+        return oi[i] if i < len(oi) else oi[-1] + 1
+
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        k = 0
+        if tag in ("equal", "replace"):
+            for k in range(min(i2 - i1, j2 - j1)):       # same place in the row = Modified
+                ops.append(("pair", oi[i1 + k], ni[j1 + k]))
+            k = min(i2 - i1, j2 - j1)
+        ops += [("del", oi[i], nxt_new(j1 + k)) for i in range(i1 + k, i2)]
+        ops += [("ins", ni[j], nxt_old(i1 + k)) for j in range(j1 + k, j2)]
+    return ops
+
 def _align(O: list[Block], N: list[Block]) -> list[tuple]:
     """("pair", i, j) | ("del", i, next_new_index) | ("ins", j, next_old_index)."""
-    sm = SequenceMatcher(None, [_key(b) for b in O], [_key(b) for b in N], autojunk=False)
-    ops: list[tuple] = []
+    UO, UN = _units(O), _units(N)
+    sm = SequenceMatcher(None, [(u.where, u.key) for u in UO], [(u.where, u.key) for u in UN],
+                         autojunk=False)
+    uops: list[tuple] = []
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
-            ops += [("pair", i1 + k, j1 + k) for k in range(i2 - i1)]
+            uops += [("pair", i1 + k, j1 + k) for k in range(i2 - i1)]
         else:
-            ops += _pair_range(O, N, i1, i2, j1, j2)
+            uops += _pair_range(UO, UN, i1, i2, j1, j2, _make_unit_sim(O, N))
+    uops = _pair_moved(UO, UN, uops, _make_unit_sim(O, N))
+
+    ops: list[tuple] = []
+    for op in uops:
+        if op[0] == "pair":
+            ops += _expand_pair(O, N, UO[op[1]], UN[op[2]])
+        elif op[0] == "del":
+            nxt = UN[op[2]].idx[0] if op[2] < len(UN) else len(N)
+            ops += [("del", i, nxt) for i in UO[op[1]].idx]
+        else:
+            nxt = UO[op[2]].idx[0] if op[2] < len(UO) else len(O)
+            ops += [("ins", j, nxt) for j in UN[op[1]].idx]
     return ops
+
 
 # ------------------------------------------------------------------ formatting
 _COLOR_NAMES = {
