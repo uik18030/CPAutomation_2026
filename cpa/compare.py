@@ -78,7 +78,7 @@ def _unnumbered(b: Block) -> str | None:
     return None
 
 def _key(b:Block) -> tuple[str, str]:
-    return (_group(b), _unnumbered or _ctext(b))
+    return (_group(b), _unnumbered(b) or _ctext(b))
 
 def _plain(b: Block) -> str:
     return "".join(" ⏎ " if c.t == "\n" else (c.raw or c.t) for c in b.chars).strip()
