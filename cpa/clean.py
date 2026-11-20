@@ -27,6 +27,8 @@ from cpa.extract import Char, Document, PageInfo, TableInfo, extract
 # ------------------------------------------------------------------ settings
 HF_TOP_RATIO = 0.075        # text above 7.5 % of the page height = header
 HF_BOTTOM_RATIO = 0.925     # text below 92.5 % of the page height = footer
+RUNNING_ZONE = 0.20
+RUNNING_Y_TOL = 4.0
 STRIKE_BAND = (0.35, 0.65)  # strike line must cross this part of the character height
 STRIKE_Y_TOL = 1.5          # pt: pieces at about the same height are joined
 STRIKE_X_GAP = 1.0          # pt: max gap between pieces that are joined
@@ -240,7 +242,29 @@ def _underlined_ids(doc: Document) -> set[int]:
             segs.setdefault(page, []).append(m)
     return _lined_ids(doc, segs, UNDERLINE_BAND)
 
-    
+def _running_ids(doc: Document) -> set[int]:
+    """Tall page headers/footers: a line at the same height near the top or bottom of
+    most pages (page numbers and other digits ignored) is a running header/footer."""
+    page_h = {p.number: p.height for p in doc.pages}
+    if len(page_h) < 2:
+        return set()
+    tables: dict[int, list] = {}
+    for t in doc.tables:
+        tables.setdefault(t.page, []).append(t.box)
+    found: dict[tuple, list] = {}
+    for line in doc.lines:
+        h = page_h[line.page]
+        if RUNNING_ZONE * h < line.top and line.bottom < (1 - RUNNING_ZONE) * h:
+            continue
+        cy = (line.top + line.bottom) / 2
+        if any(b[1] - 1.0 <= cy <= b[3] + 1.0 for b in tables.get(line.page, [])):
+            continue                                  # table text is never a page header
+        text = re.sub(r"[\d\s]", "", line.text)
+        if text:
+            found.setdefault((text, round(line.top / RUNNING_Y_TOL)), []).append(line)
+    need = max(2, len(page_h) // 2)
+    return {id(l) for lines in found.values() if len({l.page for l in lines}) >= need for l in lines}
+
 def _is_cjk(ch: str) -> bool:
     """Japanese/Chinese characters and full-width punctuation (no spaces next to these)."""
     return unicodedata.east_asian_width(ch) in ("W", "F")
@@ -363,6 +387,28 @@ def _table_mapping(doc: Document, cell_subs: dict,
     def text_between(pt: TableInfo, t: TableInfo) -> bool:
         return any((s.page == pt.page and s.top >= pt.bbox[3] - 1.0)
                    or (s.page == t.page and s.bottom <= t.bbox[1] + 1.0) for s in body_subs)
+    
+    def split_row(pti: int, pt: TableInfo, ti: int, t: TableInfo, ri: int) -> bool:
+        """Is row *ri* of table *t* the second half of the last row of table *pt*?
+        Yes if each of its filled cells continues a cell above it whose text ran to
+        the cell's right edge (wrapped onto the next page). A real new row always has
+        a cell under a short one (a value, a code), so it is never joined."""
+        if ri >= len(t.rows):
+            return False
+        last = len(pt.rows) - 1
+        filled = [ci for ci in range(len(t.rows[ri])) if cell_subs.get((ti, ri, ci))]
+        if not filled:
+            return False
+        for ci in filled:
+            above = cell_subs.get((pti, last, ci))
+            box = pt.rows[last][ci] if ci < len(pt.rows[last]) else None
+            if not above or box is None:
+                return False
+            tail = max(above, key=lambda s: (s.top, s.x1))
+            if tail.x1 < box[2] - 2 * tail.size - 6.0:
+                return False                      # its last line was short: not wrapped
+        return True
+    
     mapping: dict[int, tuple[int, int, bool]] = {}
     base: list[int] = []
     total_rows: list[int] = []
@@ -380,8 +426,10 @@ def _table_mapping(doc: Document, cell_subs: dict,
             lid = mapping[prev[0]][0]
             head = _row_text(cell_subs, ti, 0)
             drop = bool(head) and head == _row_text(cell_subs, base[lid], 0)
-            mapping[ti] = (lid, total_rows[lid] - (1 if drop else 0), drop)
-            total_rows[lid] += len(t.rows) - (1 if drop else 0)
+            first = 1 if drop else 0
+            split = split_row(prev[0],prev[1], ti, t, first)
+            mapping[ti] = (lid, total_rows[lid] - (1 if split else 0), drop)
+            total_rows[lid] += len(t.rows) - (1 if split  else 0)
         else:
             mapping[ti] = (len(base), 0, False)
             base.append(ti)
@@ -393,6 +441,7 @@ def _table_mapping(doc: Document, cell_subs: dict,
 def clean(doc: Document, source: Path | None = None) -> CleanDoc:
     struck = _struck_ids(doc)
     underlined = _underlined_ids(doc)
+    running = _running_ids(doc)
     page_h = {p.number: p.height for p in doc.pages}
     tables_by_page: dict[int, list[tuple[int, TableInfo]]] = {}
     for ti, t in enumerate(doc.tables):
@@ -404,10 +453,10 @@ def clean(doc: Document, source: Path | None = None) -> CleanDoc:
 
     for line in doc.lines:
         h = page_h[line.page]
-        if line.top < h * HF_TOP_RATIO or line.bottom > h * HF_BOTTOM_RATIO:
+        if line.top < h * HF_TOP_RATIO or line.bottom > h * HF_BOTTOM_RATIO or id(line) in running:
             sub = _make_sub(line.page, line.chars, struck, underlined)
             if sub:
-                hf_subs.append((HEADER_LABEL if line.top < h * HF_TOP_RATIO else FOOTER_LABEL, sub))
+                hf_subs.append((HEADER_LABEL if line.top < h / 2  else FOOTER_LABEL, sub))
             continue
         groups: dict[tuple[int, int, int] | None, list[Char]] = {}
         for c in line.chars:
