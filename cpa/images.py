@@ -224,7 +224,7 @@ def _best(o: Pic, n: Pic) -> tuple[str | None, int]:
 
 def _score(o: Pic, n: Pic) -> float:
     if o.digest and o.digest == n.digest:
-        return 1.0
+        s = 1.0
     else:
         _, d = _best(o, n)
         s = 1.0 - d / 64 if d <= PAIR_DIST else 0.0
