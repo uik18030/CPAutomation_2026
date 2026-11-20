@@ -417,9 +417,16 @@ def _attr_of(detail: str) -> str:
     return detail
 
 # ------------------------------------------------------------------ character diff
-def _diff_pair(o: Block, n: Block):
+def _diff_pair(o:Block, n:Block):
+    un = _unnumbered(o)
+    if un is not None and un == _unnumbered(n):
+        return None
     oc, nc = _compact(o), _compact(n)
     sm = SequenceMatcher(None, [c.t for _, c in oc], [c.t for _, c in nc], autojunk=False)
+    if oc and nc and sm.ratio() < MATCH_MIN:
+        # completely different text in the same place ("Released" -> "DRAFT"): one replacement
+        return ([], _boxes_for(nc, set(range(len(nc)))), [],
+                [f"「{_txt(oc, 0, len(oc))}」 → 「{_txt(nc, 0, len(nc))}」"])     
     old_idx: set[int] = set()
     new_idx: set[int] = set()
     markers: list[Box] = []
@@ -601,15 +608,28 @@ def _first_box(*box_lists: list[Box]):
 def _pos(c: Change) -> tuple:
     """Position used to number changes in document order."""
     if c.new_blocks:
-        b = c.new_blocks[0]
-        return (b.page, b.top)
+        return min((b.page, b.top) for b in c.new_blocks)
     p = _first_box(c.new_boxes, c.new_markers, c.new_anchor)
     if p:
         return p
     if c.old_blocks:
-        b = c.old_blocks[0]
-        return (b.page, b.top)
+        return min((b.page, b.top) for b in c.old_blocks)
     return _first_box(c.old_boxes, c.old_anchor) or (10 ** 9, 0.0)
+
+def _fold_images(body:list[Change], images: list[Change]) -> list[Change]:
+    """A picture deleted/added together with its whole section joins that section's row."""
+    sections = {(c.kind, c.heading):c for c in body 
+            if c.kind in ("Deleted", "New") and _first_kind(c) == "heading"}
+    rest: list[Change] =[]
+    for im in images:
+        sec = sections.get((im.kind, im.heading))
+        if sec is None:
+            rest.append(im)
+            continue
+        sec.old_boxes += im.old_boxes
+        sec.new_boxes += im.new_boxes
+        sec.details += im.details
+    return rest
 
 def _systematic() -> set[str]:
     """Format attributes that differ almost everywhere: the two PDFs were made differently
@@ -640,6 +660,7 @@ def compare(old: CleanDoc, new: CleanDoc) -> list[Change]:
     hf = _changes_for(_dedupe([b for b in old.blocks if b.kind == "hf"]),
                       _dedupe([b for b in new.blocks if b.kind == "hf"]))
     img_body, img_hf = image_changes(old, new)
+    img_body = _fold_images(body, img_body)
     changes = sorted(body + img_body, key=_pos) + sorted(hf + img_hf, key=_pos)
     for i, c in enumerate(changes, start=1):
         c.no = i
