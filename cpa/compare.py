@@ -120,6 +120,51 @@ def _expand_words(seq: list[tuple[int, TChar]], idx: set[int]) -> set[int]:
             out.add(k)
     return out
 
+def _word_span(seq: list[tuple[int, TChar]], a: int, b: int) -> tuple[int, int]:
+    """Grow the changed range [a, b) to whole English words / numbers (3235 -> 3300)."""
+    def tok(k: int) -> bool:         # letter/digit, or . - / : between two of them (2023.10.16, PM-2)
+        if not 0 <= k < len(seq):
+            return False
+        t = seq[k][1].t
+        return _is_word(t) or (t in ".-/:" and 0 < k < len(seq) - 1
+                               and _is_word(seq[k - 1][1].t) and _is_word(seq[k + 1][1].t))
+
+    def joined(k: int) -> bool:      # seq[k-1] and seq[k] belong to one word / number / code
+        return 0 < k < len(seq) and tok(k - 1) and tok(k) and seq[k][0] == seq[k - 1][0] + 1
+    while joined(a):
+        a -= 1
+    while joined(b):
+        b += 1
+    return a, b
+
+def _text_details(oc, nc, edits: list[tuple[int, int, int, int]]):
+    """One detail per changed word or text run: 「old」 → 「new」, added 「…」, removed 「…」.
+    Also returns the characters to box: removed text in old, new/changed text in new."""
+    spans: list[list[int]] = []
+    for i1, i2, j1, j2 in edits:
+        a, b = _word_span(oc, i1, i2)
+        c, d = _word_span(nc, j1, j2)
+        if spans and a <= spans[-1][1] and c <= spans[-1][3]:
+            spans[-1] = [min(spans[-1][0], a), max(spans[-1][1], b), min(spans[-1][2], c), max(spans[-1][3], d)]
+        else:
+            spans.append([a, b, c, d])
+    out: list[str] = []
+    old_box: set[int] = set()
+    new_box: set[int] = set()
+    removed_at: list[int] = []                   # where text was only removed (marker in new)
+    for a, b, c, d in spans:
+        if a == b:
+            out.append(f"added 「{_txt_spaced(nc, c, d)}」")
+        elif c == d:
+            out.append(f"removed 「{_txt_spaced(oc, a, b)}」")
+            old_box.update(range(a, b))
+            removed_at.append(c)
+        else:
+            out.append(f"「{_txt_spaced(oc, a, b)}」 → 「{_txt_spaced(nc, c, d)}」")
+        new_box.update(range(c, d))
+    return out, old_box, new_box, removed_at
+        
+
 def _boxes_for(seq: list[tuple[int, TChar]], idx: set[int]) -> list[Box]:
     out: list[Box] = []
     run: list[TChar] = []
@@ -134,6 +179,15 @@ def _boxes_for(seq: list[tuple[int, TChar]], idx: set[int]) -> list[Box]:
 
 def _txt(seq: list[tuple[int, TChar]], a: int, b: int) -> str:
     return "".join(c.raw or c.t for _, c in seq[a:b])
+
+def _txt_spaced(seq: list[tuple[int, TChar]], a:int, b:int) -> str:
+    """Like _txt, with a space where the document had a space or line break (4.1 5.0)."""
+    out: list[str] =[]
+    for k in range(a,b):
+        if k > a and seq[k][0] != seq[k-1][0] + 1:
+            out.append(" ")
+        out.append(seq[k][1].raw or seq[k][1].t)
+    return "".join(out)
 
 # ------------------------------------------------------------------ markers
 def _point_marker(seq: list[tuple[int, TChar]], j: int) -> Box | None:
