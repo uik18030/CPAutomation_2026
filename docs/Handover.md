@@ -88,9 +88,9 @@ python tests/check_answer_key.py                        # must show 6 passed, 0 
     pictures drifted up from ~row 111 (rows 111/117/175/182 had 2–5 pictures, rows 114/177/184–190 none)
   - clean.py `heading_title`: reject titles starting with `[ ［ ( （ < ＜ { ｛` and titles with
     fewer than 2 letters/kana/kanji (fixes headings like "② ③ ④", "⑤", "[km/h]")
-- [ ] Investigate doc2 changes 45–64 (Deleted block followed by New block under 「単発(サイン音/音声案内)」):
+- [x] Investigate doc2 changes 45–64 (Deleted block followed by New block under 「単発(サイン音/音声案内)」):
       likely table cells not pairing between .docx-PDF and supplier PDF
-- [ ] 2b formatting (colour, bold/italic from font name, underline, size)
+- [x] 2b formatting (colour, bold/italic from font name, underline, size)
 - [ ] 2c table formatting · 2d spacing + 「要確認_Minor」 · 2e pixel safety net
 - [ ] Step 3 Excel finish · Step 4 app
 
