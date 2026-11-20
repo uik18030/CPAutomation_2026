@@ -7,6 +7,7 @@ Writes output/changes.txt (UTF-8).
 from __future__ import annotations
 
 import argparse
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -22,6 +23,8 @@ SIZE_TOL = 0.3
 COLOR_TOL = 0.15
 SYSTEMATIC_RATIO = 0.3
 SYSTEMATIC_MIN = 200
+MOVED_MIN_CHARS = 4
+MOVED_SIM = 0.85
 
 
 Box = tuple[int, float, float, float, float]  # page, x0, top, x1, bottom
@@ -62,8 +65,20 @@ def _group(b: Block) -> str:
         return "hf:" + b.heading
     return "text"
 
-def _key(b: Block) -> tuple[str, str]:
-    return (_group(b), _ctext(b))
+_HEAD_NO_RE = re.compile(r"^(?:第\d+[章節項条部編]|\(\d+\)|[\u2460-\u2473]|\d+(?:\.\d+)*[.)]?)")
+_CAPTION_NO_RE = re.compile(r"^((?:表|図|Table|Figure|Fig\.?))\d+(?:[.\-]\d+)*")
+
+def _unnumbered(b: Block) -> str | None:
+    """Heading / caption text without its number (renumbering alone is not a change)."""
+    t = _ctext(b)
+    if b.kind == "heading":
+        return "#" + _HEAD_NO_RE.sub("", t)
+    if b.kind == "para" and _CAPTION_NO_RE.match(t):
+        return _CAPTION_NO_RE.sub(r"\1#",t)
+    return None
+
+def _key(b:Block) -> tuple[str, str]:
+    return (_group(b), _unnumbered or _ctext(b))
 
 def _plain(b: Block) -> str:
     return "".join(" ⏎ " if c.t == "\n" else (c.raw or c.t) for c in b.chars).strip()
@@ -164,7 +179,7 @@ def _sim(o: Block, n: Block) -> float:
         r = min(1.0, r + COL_BONUS)
     return r
 
-def _pair_range(O: list[Block], N: list[Block], i1: int, i2: int, j1: int, j2: int) -> list[tuple]:
+def _pair_range(O: list[Block], N: list[Block], i1: int, i2: int, j1: int, j2: int, sim_fn=_sim) -> list[tuple]:
     n, m = i2 - i1, j2 - j1
     if n == 0:
         return [("ins", j1 + k, i1) for k in range(m)]
@@ -173,7 +188,7 @@ def _pair_range(O: list[Block], N: list[Block], i1: int, i2: int, j1: int, j2: i
     if n * m > MAX_PAIR_CELLS:
         return [("del", i1 + k, j1) for k in range(n)] + [("ins", j1 + k, i2) for k in range(m)]
 
-    sim = [[_sim(O[i1 + a], N[j1 + b]) for b in range(m)] for a in range(n)]
+    sim = [[sim_fn(O[i1 + a], N[j1 + b]) for b in range(m)] for a in range(n)]
     dp = [[0.0] * (m + 1) for _ in range(n + 1)]
     for a in range(n - 1, -1, -1):
         for b in range(m - 1, -1, -1):
