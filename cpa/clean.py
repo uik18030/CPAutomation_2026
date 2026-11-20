@@ -250,7 +250,7 @@ def _running_ids(doc: Document) -> set[int]:
         return set()
     tables: dict[int, list] = {}
     for t in doc.tables:
-        tables.setdefault(t.page, []).append(t.box)
+        tables.setdefault(t.page, []).append(t.bbox)
     found: dict[tuple, list] = {}
     for line in doc.lines:
         h = page_h[line.page]
@@ -428,8 +428,8 @@ def _table_mapping(doc: Document, cell_subs: dict,
             drop = bool(head) and head == _row_text(cell_subs, base[lid], 0)
             first = 1 if drop else 0
             split = split_row(prev[0],prev[1], ti, t, first)
-            mapping[ti] = (lid, total_rows[lid] - (1 if split else 0), drop)
-            total_rows[lid] += len(t.rows) - (1 if split  else 0)
+            mapping[ti] = (lid, total_rows[lid] - first - (1 if split else 0), drop)
+            total_rows[lid] += len(t.rows) - first -  (1 if split  else 0)
         else:
             mapping[ti] = (len(base), 0, False)
             base.append(ti)
