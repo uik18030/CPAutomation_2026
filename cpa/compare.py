@@ -485,36 +485,44 @@ def _diff_pair(o:Block, n:Block):
     new_idx: set[int] = set()
     markers: list[Box] = []
     details: list[str] = []
+    edits:list[tuple[int, int, int, int]] = [] # text changes, described after the loop
+    fmt_runs:list[tuple[int, int, tuple]] = [] # formatting changes (new start, end, what)
 
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
             # formatting: one detail line per run of characters with the same difference
             run: list[int] = []
             run_diff: tuple[str, ...] = ()
-            for k in range(i2 - i1):
+            for k in range (i2 - i1):
                 diff = _format_diff(oc[i1 + k][1], nc[j1 + k][1])
                 _count_styles(diff)
                 if run and (not diff or diff != run_diff or j1 + k != run[-1] + 1):
-                    details.append(f"{', '.join(run_diff)} 「{_txt(nc, run[0], run[-1] + 1)}」")
+                    fmt_runs.append((run[0], run[-1] + 1, run_diff))
                     run = []
                 if diff:
                     run.append(j1 + k)
                     run_diff = diff
                     new_idx.add(j1 + k)
             if run:
-                details.append(f"{', '.join(run_diff)} 「{_txt(nc, run[0], run[-1] + 1)}」")
-        elif tag == "replace":
-            new_idx.update(range(j1, j2))
-            details.append(f"「{_txt(oc, i1, i2)}」 → 「{_txt(nc, j1, j2)}」")
-        elif tag == "insert":
-            new_idx.update(range(j1, j2))
-            details.append(f"added 「{_txt(nc, j1, j2)}」")
+                fmt_runs.append((run[0], run[-1] + 1, run_diff))
+        elif tag in ("replace", "insert"):
+            edits.append((i1, i2, j1, j2))
         else:  # delete
-            old_idx.update(range(i1, i2))
-            details.append(f"removed 「{_txt(oc, i1, i2)}」")
-            m = _point_marker(nc, j1)
-            if m:
-                markers.append(m)
+            edits.append((i1, i2, j1, j2))
+
+    text, o_box, n_box, removed_at = _text_details(oc, nc, edits)
+    for j in removed_at:
+        m = _point_marker(nc, j)
+        if m:
+            markers.append(m)
+    for a, b, what in fmt_runs:
+        if all(k in n_box for k in range(a, b)):
+            new_idx.difference_update(range(a, b))    # inside a changed word: already reported
+            continue
+        details.append(f"{', '.join(what)} 「{_txt(nc, a, b)}」")
+    details += text
+    old_idx |= o_box
+    new_idx |= n_box
 
     if not old_idx and not new_idx:
         return None
@@ -670,6 +678,38 @@ def _pos(c: Change) -> tuple:
         return min((b.page, b.top) for b in c.old_blocks)
     return _first_box(c.old_boxes, c.old_anchor) or (10 ** 9, 0.0)
 
+TOC_LABEL = "目次"
+_TOC_RE = re.compile(r"(?:\.{4,}|…{2,}|・{4,}|‥{2,})\s*\d+$")
+
+def _is_toc(c: Change) -> bool:
+    blocks = c.new_blocks or c.old_blocks
+    return bool(blocks) and all(b.kind == "para" and _TOC_RE.search(_ctext(b)) for b in blocks)
+
+def _group_toc(changes: list[Change]) -> list[Change]:
+    """Table of contents: all its changes on one page = one row (page numbers shift a lot)."""
+    out: list[Change] = []
+    for c in changes:
+        if not _is_toc(c):
+            out.append(c)
+            continue
+        page = (c.new_blocks or c.old_blocks)[0].page
+        p = out[-1] if out else None
+        if p is not None and p.heading == TOC_LABEL and (p.new_blocks or p.old_blocks)[0].page == page:
+            if p.kind != c.kind:
+                p.kind = "Modified"
+            p.old_blocks += c.old_blocks
+            p.new_blocks += c.new_blocks
+            p.old_boxes += c.old_boxes
+            p.new_boxes += c.new_boxes
+            p.new_markers += c.new_markers
+            p.old_anchor += c.old_anchor
+            p.new_anchor += c.new_anchor
+            p.details += c.details
+            continue
+        c.heading = TOC_LABEL
+        out.append(c)
+    return out
+
 def _fold_images(body:list[Change], images: list[Change]) -> list[Change]:
     """A picture deleted/added together with its whole section joins that section's row."""
     sections = {(c.kind, c.heading):c for c in body 
@@ -715,7 +755,7 @@ def compare(old: CleanDoc, new: CleanDoc) -> list[Change]:
                       _dedupe([b for b in new.blocks if b.kind == "hf"]))
     img_body, img_hf = image_changes(old, new)
     img_body = _fold_images(body, img_body)
-    changes = sorted(body + img_body, key=_pos) + sorted(hf + img_hf, key=_pos)
+    changes = _group_toc(sorted(body + img_body, key = _pos)) + sorted(hf + img_hf, key=_pos)
     for i, c in enumerate(changes, start=1):
         c.no = i
     return changes
