@@ -34,6 +34,8 @@ PAIR_DIST = 20           # pictures at or below this (in any orientation) are th
 FLIP_MARGIN = 4          # a flip must match clearly better than a rotation to be reported as a flip
 SIZE_TOL = 0.05          # size change above 5 % = resized
 MAX_PAIR_CELLS = 250_000
+HEADING_BONUS = 0.25
+
 
 ORIENTATIONS = [
     ("rotated 180°", Image.Transpose.ROTATE_180),
@@ -223,8 +225,12 @@ def _best(o: Pic, n: Pic) -> tuple[str | None, int]:
 def _score(o: Pic, n: Pic) -> float:
     if o.digest and o.digest == n.digest:
         return 1.0
-    _, d = _best(o, n)
-    return 1.0 - d / 64 if d <= PAIR_DIST else 0.0
+    else:
+        _, d = _best(o, n)
+        s = 1.0 - d / 64 if d <= PAIR_DIST else 0.0
+    if s >0 and o.heading == n.heading:
+        s += HEADING_BONUS
+    return s
 
 def _align(O: list[Pic], N: list[Pic]) -> list[tuple[int, int]]:
     """Pairs (old index, new index), keeping document order."""
