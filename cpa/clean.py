@@ -290,14 +290,20 @@ def _cell_of(c: Char, tables: list[tuple[int, TableInfo]]) -> tuple[int, int, in
 # ------------------------------------------------------------------ joining
 _END = ("。", "．", "!", "！", "?", "？", ":", "：")
 
-def _continues(prev: _Sub, nxt: _Sub) -> bool:
-    """Does *nxt* continue the paragraph that *prev* is in?"""
+def _continues(prev: _Sub, nxt: _Sub, right: float | None = None) -> bool:
+    """Does *nxt* continue the paragraph that *prev* is in?
+
+    *right* = right margin of the document's text: onto a new page only a line that
+    reaches it (wrapped text) continues; a short line (title, label) ends its paragraph.
+    """
     if prev.raw.rstrip().endswith(_END) or _starts_with_bullet(nxt.raw):
         return False
     if nxt.page == prev.page:
         lh = max(prev.bottom - prev.top, 1.0)
         if nxt.top < prev.top or nxt.top - prev.bottom > lh:
             return False
+    elif right is not None and prev.x1 < right -2 * prev.size:
+        return False
     return True
 
 def _collapse(tcs: list[TChar]) -> list[TChar]:
@@ -345,9 +351,18 @@ def _same_columns(a: TableInfo, b: TableInfo) -> bool:
     xb = sorted(c[0] for c in b.rows[0] if c)
     return len(xa) == len(xb) and all(abs(p - q) <= 2.0 for p, q in zip(xa, xb))
 
-def _table_mapping(doc: Document, cell_subs: dict) -> dict[int, tuple[int, int, bool]]:
-    """table index -> (logical table id, row offset, drop first row)."""
+def _table_mapping(doc: Document, cell_subs: dict,
+                   body_subs: list[_Sub] = ()) -> dict[int, tuple[int, int, bool]]:
+    """table index -> (logical table id, row offset, drop first row).
+
+    A table continues on the next page only if no body text (a caption, a heading...)
+    lies below it on its page or above the next table on the next page.
+    """
     page_h = {p.number: p.height for p in doc.pages}
+
+    def text_between(pt: TableInfo, t: TableInfo) -> bool:
+        return any((s.page == pt.page and s.top >= pt.bbox[3] - 1.0)
+                   or (s.page == t.page and s.bottom <= t.bbox[1] + 1.0) for s in body_subs)
     mapping: dict[int, tuple[int, int, bool]] = {}
     base: list[int] = []
     total_rows: list[int] = []
@@ -359,7 +374,8 @@ def _table_mapping(doc: Document, cell_subs: dict) -> dict[int, tuple[int, int, 
             cont = (t.page == pt.page + 1
                     and t.bbox[1] < page_h[t.page] * 0.25
                     and pt.bbox[3] > page_h[pt.page] * 0.6
-                    and _same_columns(pt, t))
+                    and _same_columns(pt, t)
+                    and not text_between(pt,t))
         if cont:
             lid = mapping[prev[0]][0]
             head = _row_text(cell_subs, ti, 0)
@@ -408,13 +424,11 @@ def clean(doc: Document, source: Path | None = None) -> CleanDoc:
     content: list[tuple[tuple, Block]] = []
 
     # body: paragraphs and headings
-    page_right: dict[int, float] = {}
-    for s in body_subs:
-        page_right[s.page] = max(page_right.get(s.page, 0.0), s.x1)
+    text_right = max([s.x1 for s in body_subs] + [t.bbox[2] for t in doc.tables], default = 0.0)
 
     def heading_of(s: _Sub) -> str | None:
         t = heading_title(s.raw)
-        if t is None or s.x1 >= page_right[s.page] - 2 * s.size:   # full-width line = wrapped text
+        if t is None or s.x1 >= text_right- 2 * s.size:   # full-width line = wrapped text
             return None
         return t
 
@@ -423,7 +437,7 @@ def clean(doc: Document, source: Path | None = None) -> CleanDoc:
         if heading_of(s) is not None:
             paras.append([s])
             paras.append([])                       # nothing joins onto a heading
-        elif paras and paras[-1] and heading_of(paras[-1][-1]) is None and _continues(paras[-1][-1], s):
+        elif paras and paras[-1] and heading_of(paras[-1][-1]) is None and _continues(paras[-1][-1], s, text_right):
             paras[-1].append(s)
         else:
             paras.append([s])
@@ -436,7 +450,7 @@ def clean(doc: Document, source: Path | None = None) -> CleanDoc:
             content.append(((first.page, first.top, 0, 0), b))
 
     # table cells
-    mapping = _table_mapping(doc, cell_subs)
+    mapping = _table_mapping(doc, cell_subs, body_subs)
     table_rows: dict[tuple[int, int], tuple[int, float, float, float, float]] = {}
     for ti, t in enumerate(doc.tables):
         lid, off, drop = mapping[ti]
