@@ -40,6 +40,24 @@ def _fit(png: Path, max_w: float, max_h: float) -> tuple[float, float]:
     scale = min(max_w / w, max_h / h)
     return w * scale, h * scale
 
+def _snap_to_row(ws, shp, r: int, col: int) -> int:
+    """Move a picture until Excel puts its top-left corner in row r
+    
+    Excel rounds row heights to screen pixels, so positions measure d from the top of the sheet drift a little on long sheets. Returns how many moves were needed
+    {0 = already right, -1 = could not fix}.
+    """
+    for moves in range(10):
+        got = shp.TopLeftCell.Row
+        if got == r:
+            return moves
+        step = ws.Cells(r, col).Top - ws.Cells(got, col).Top
+        if abs(step) < 1.0:
+            step = 1.0 if got < r else - 1.0
+        shp.Top = shp.Top + step
+    return 0 if shp.TopLeftCell.Row == r else - 1
+
+
+
 def write_excel(changes: list[Change], shots: dict[int, tuple[Path | None, Path | None]], template: str | Path, out_path: str | Path) -> Path:
 
     import pythoncom
@@ -85,6 +103,8 @@ def write_excel(changes: list[Change], shots: dict[int, tuple[Path | None, Path 
             ws.Cells(row, COL_NO).Value = c.no
             ws.Cells(row, COL_HEADER).Value = c.heading
             ws.Cells(row, COL_DESC).Value = c.kind
+            if c.kind == "New":
+                ws.Cells(row, COL_OLD).Value = "N/A"
             text = ws.Range(ws.Cells(row, COL_NO), ws.Cells(row, COL_DESC))
             text.VerticalAlignment = XL_TOP
             text.WrapText = True
@@ -95,6 +115,7 @@ def write_excel(changes: list[Change], shots: dict[int, tuple[Path | None, Path 
             row += 1
         
         # pass 2: pictures, now that every row position is final
+        nudged = 0
         misplaced = 0
         for r, c, pics in plan:
             for col, (png, w, h) in pics.items():
@@ -102,12 +123,19 @@ def write_excel(changes: list[Change], shots: dict[int, tuple[Path | None, Path 
                 shp = ws.Shapes.AddPicture(str(png), False, True, cell.Left + PIC_MARGIN, cell.Top + PIC_MARGIN, w, h)
                 shp.Placement = XL_MOVE_AND_SIZE
                 shp.Name = f"CP{c.no:03d}_{'old' if col == COL_OLD else 'new'}"
-                if shp.TopLeftCell.Row != r:
+                first_row = shp.TopLeftCell.Row
+                moves = _snap_to_row(ws, shp, r , col)
+                if moves > 0:
+                    nudged += 1
+                    if nudged <= 3:
+                        print(f"    info; row {r} picture first landed in rw {first_row}, "
+                              f"moved {moves}x, row height {ws.Rows(r).RowHeight:.2f}")
+                elif moves < 0:
                     misplaced += 1
-        
+        if nudged:
+            print(f"Pictures moved into their own row: {nudged}")
         if misplaced:
-            print(f"WARNING: {misplaced} picture(s) not in their own row")
-        
+            print(f"WARNING: {misplaced} picture(s) not in thier own row")
         last_row = row - 1
         if last_row > FILTER_LAST_ROW:
             ws.AutoFilterMode = False
