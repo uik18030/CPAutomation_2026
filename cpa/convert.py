@@ -110,6 +110,29 @@ def get_password(pdf_path) -> str | None:
     """Password entered for this PDF in this run (never stored on disk)."""
     return _PASSWORDS.get(_key(pdf_path))
 
+def needs_password(pdf_path) -> bool:
+    """True if the PDF cannot be opened without a password that is not known yet."""
+    import pypdfium2 as pdfium
+
+    if _key(pdf_path) in _PASSWORDS:
+        return False
+    try:
+        pdfium.PdfDocument(str(pdf_path)).close()
+        return False
+    except pdfium.PdfiumError:
+        return True
+
+def try_password(pdf_path, pw: str) -> bool:
+    """Remember *pw* for this PDF if it opens it (for the app's password box)."""
+    import pypdfium2 as pdfium
+
+    try:
+        pdfium.PdfDocument(str(pdf_path), password=pw).close()
+    except pdfium.PdfiumError:
+        return False
+    _PASSWORDS[_key(pdf_path)] = pw
+    return True
+
 def ensure_password(pdf_path) -> None:
     """If the PDF needs a password to open, ask for it (input is hidden)."""
     import getpass
